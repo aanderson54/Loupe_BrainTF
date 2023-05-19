@@ -1,0 +1,3879 @@
+---
+title: "Extensive profiling of transcription factors in postmortem brains defines genomic occupancy in disease-relevant cell types and links TF activities to neuropsychiatric disorders."
+date: "5/19/2023"
+output: 
+  html_document:
+    toc: true
+---
+
+
+
+
+# Pre-processing
+This was run for each tissue/cell type
+
+```{r, eval=F}
+TF_peaks_DLPFC<-as.list(readLines("BrainTF/path_to_DLPFC-bulk_IDR-optimalPeaks.csv"))
+
+list_ChIP_bulk_DLPFC <- mclapply(TF_peaks_DLPFC, function(group) {
+  narrowPeaks <- import(group,
+                        genome = "hg38",
+                        extraCols = extraCols_narrowPeak,
+                        format = "BED")
+},mc.preschedule=TRUE, mc.cores=10)
+names(list_ChIP_bulk_DLPFC)=TF_names_DLPFC
+list_ChIP_bulk_DLPFC =lapply(list_ChIP_bulk_DLPFC ,function(x){unique(x)})
+
+
+unlist_DLPFC=unlist(as(list_ChIP_bulk_DLPFC,"GRangesList")) # unlist the list of objects to create one large object
+unlist_DLPFC <- unlist_DLPFC[-grep("H3K",names(unlist_DLPFC))]  # removing histone marks to reduce concatenation
+unlist_DLPFC$name <- names(unlist_DLPFC)
+union_DLPFC=reduce(unlist_DLPFC) #any amount of overlap between 2 peaks will combine them
+saveRDS(union_DLPFC,"union_DLPFC.rds")
+saveRDS(unlist_DLPFC,"unlist_DLPFC.rds")
+
+```
+
+
+The following script was run for each tissue/cell type. 
+* reducing all peaks caused some large union peaks because of many adjacent peaks with small amounts of overlap
+* script can be found in the scripts directory
+
+```{bash, eval=F}
+Rscript Breaking_up_merged_peaks_max_2kb_bins_parallel.R union_DLPFC.rds unlist_DLPFC.rds
+```
+
+
+For each tissue/cell type, read in the union peaks and list of all peaks to count the number of TFs in a peak
+
+```{r, eval=F}
+unlist_files<-as.list(readLines("BrainTF/unlist_files.csv"))
+m=sapply(strsplit(unlist(unlist_files),"[/]"),"[[",7)
+m2=sapply(strsplit(m,"[.]"),"[[",1)
+m2<-gsub("unlist_","", m2)
+unlist_list=lapply(unlist_files,function(x){
+  tmp<-readRDS(x)
+})
+names(unlist_list)<-m2
+unlist_list<-unlist_list[sort(names(unlist_list))]
+
+
+#list of all union files after running max peak length 2000bp script
+union_files<-as.list(readLines("BrainTF/union_files.csv"))
+m=sapply(strsplit(unlist(union_files),"[/]"),"[[",7)
+m2=sapply(strsplit(m,"_2000", fixed=T),"[[",1)
+m2<-gsub("union_","", m2)
+union_list=lapply(union_files,function(x){
+  tmp<-readRDS(x)
+})
+names(union_list)<-m2
+union_list<-union_list[sort(names(union_list))]
+
+
+for (i in 1:length(union_list)){
+  union_list[[i]]$count <- as.numeric(union_list[[i]]$count)
+  union_list[[i]]$tissue <- m2[i]
+  union_list[[i]]$span <- width(union_list[[i]]) 
+  union_list[[i]] = union_list[[i]][union_list[[i]]$span>85] #windowing creates some straggling cutoffs. The smallest individual peak is 89bp (NFIC in FP)
+  
+  # create a mcol with concatenated list of all unique TFs bound at each region and count
+  overlaps<-findOverlaps(unlist_list[[i]], union_list[[i]]) 
+  mcols(union_list[[i]])$TF<-NA #set empty var to write into
+  tmp<-mcols(unlist_list[[i]])$name[queryHits(overlaps)]  #get tf name for each unlist peak that overlaps
+  df<-data.frame(tf=tmp, subjectHit=subjectHits(overlaps)) 
+  tidy<-df %>% group_by(subjectHit) %>% summarize(name=paste(sort(unique(tf)), collapse=",")) #collapse tf names on union index
+  tidy$length<-str_count(tidy$name,",")+1 # counts the number of TFs by counting commas +1
+  mcols(union_list[[i]])$TF[tidy$subjectHit]<-tidy$name #add list of tfs to union grange
+  mcols(union_list[[i]])$count[tidy$subjectHit]<-tidy$length
+  names(union_list[[i]])<-NULL
+  union_list[[i]]$HOT<-ifelse(union_list[[i]]$count> quantile(union_list[[i]]$count, probs=0.9), "HOT","NOT")
+}
+
+
+
+```
+
+
+
+# Figure 1: Overview of experimental design and profile of large brain regions tested.
+## Fig 1B: upset plot
+
+```{r, eval=F}
+union_combine<-do.call(c, union_list)
+
+list_union_combine <- split(union_combine, union_combine$tissue) # split grange object into a single list
+
+# reduce the large object one more time to get the basic union of peaks from all 4 large regions
+union_combine_reduced = reduce(union_combine)
+
+df_factors=data.frame(matrix(NA,nrow=(length(union_combine_reduced)),ncol=length(names(mcols(union_combine_reduced))))) # ncol is the number of elements in the list. nrow is the number of rows (peaks) in the union of list elements
+
+for (i in 1:length(list_union_combine)){
+  ol=findOverlaps(list_union_combine[[i]],union_combine_reduced)
+  df_factors[,i]=FALSE
+  df_factors[,i][subjectHits(ol)] = TRUE
+}
+
+colnames(df_factors)=names(list_union_combine)
+df_factors=df_factors + 0 # convert T/F matrix to 1/0 matrix
+mcols(union_combine_reduced)=df_factors # this is adding the matrix values to union_peaks
+ord <- c(1,5,9,13,3,7,11,4,8,12,2,6,10)
+ord <- rev(ord)
+df_factors <- df_factors[,ord]
+
+
+
+library(ComplexUpset)
+# add cCRE status to each of the ranges
+tmp <- union_combine_reduced
+enc3 <- read.table("GRCh38-cCREs_v3.bed")
+colnames(enc3)[1:6]<-c("seqnames","start","end","V4","V5","ccre")
+enc3$encodeLabel<-sapply(strsplit(enc3$ccre,","),`[`,1)
+enc3$ccre2<-sapply(strsplit(enc3$ccre,","),`[`,2)
+enc3 <- makeGRangesFromDataFrame(enc3,keep.extra.columns=TRUE)
+# sort to prioritize PLS in downstream overlaps
+df_order <- order(enc3$encodeLabel,start(enc3),decreasing = F )
+enc3 <- enc3[df_order]
+
+
+ol<-findOverlaps(enc3,tmp, minoverlap=100)
+mcols(tmp)$encodeLabel<-"none"
+tmp[subjectHits(ol)]$encodeLabel<-mcols(enc3)$encodeLabel[queryHits(ol)]
+prop.table(table(tmp$encodeLabel))*100
+
+tmp <- as.data.frame(mcols(tmp))
+tmp <- tmp[,c("OL_NEG","FP_NEG","DLPFC_NEG","OL_OLIG","FP_OLIG","DLPFC_OLIG","OL_NEUN","FP_NEUN","DLPFC_NEUN","OL","FP","DLPFC","CB","encodeLabel")]
+
+cats <- colnames(tmp)[1:13] # subset to the columns shown in upset
+
+
+orderBind <- c("PLS","pELS","dELS","DNase-H3K4me3","DNase-CTCF-only","CTCF-only","none")
+orderBind <- rev(orderBind)
+tmp$encodeLabel <- factor(tmp$encodeLabel,levels = orderBind)
+
+
+genre_metadata = data.frame(
+    set=c("OL_NEG","FP_NEG","DLPFC_NEG","OL_OLIG","FP_OLIG","DLPFC_OLIG","OL_NEUN","FP_NEUN","DLPFC_NEUN","OL","FP","DLPFC","CB"),
+    cell_type=c('NEG','NEG','NEG','OLIG','OLIG','OLIG',"NEUN","NEUN","NEUN","BULK","BULK","BULK","BULK")
+)
+
+pdf("upset_combine_complex.pdf",width = 8, height = 6)
+upset(tmp,cats,
+      n_intersections = 14,
+      base_annotations = list('Intersection size'= intersection_size(
+        counts=FALSE,
+        mapping = aes(fill=encodeLabel)) + 
+          scale_fill_manual(values=c("PLS"="red1", "pELS"="orange", "dELS" = "gold","DNase-H3K4me3"="pink", "DNase-CTCF-only"="green","CTCF-only" = "royalblue","none"="gray"))
+        ),
+      height_ratio=0.8,
+      width_ratio=0.1,
+      sort_sets=FALSE,
+      set_sizes=(
+        upset_set_size()
+        + theme(axis.text.x=element_text(angle=90),axis.ticks.x=element_line())),
+      stripes=upset_stripes(
+        mapping=aes(color=cell_type),
+        colors=c(
+            'NEUN'='lightskyblue',
+            'OLIG'='lightgreen',
+            'NEG'='tomato',
+            'BULK'='lightgoldenrod1'
+        ),
+        data=genre_metadata
+    )
+      )
+dev.off()
+
+
+```
+
+## Fig 1B: ENCODE annotations
+```{r, eval=F}
+tmp$encodeLabel<-ifelse(grepl("CTCF", tmp$encodeLabel),"CTCF-only",tmp$encodeLabel)
+tab<-as.data.frame(prop.table(table(tmp$encodeLabel)))
+tab$Var1<-factor(tab$Var1, levels=c("PLS","pELS","dELS","DNase-H3K4me3","CTCF-only", "none"))
+
+pdf("ENCODE_cCRE_barplot.pdf", width=4, height=6)
+ggplot(tab, aes(y=Freq, fill=Var1, x="A"))+geom_bar(stat="identity")+theme_classic()+xlab("ENCODE cCRE Combined")+ylab("Percent") +scale_fill_manual(values=c("PLS"="red1", "pELS"="orange", "dELS" = "gold","DNase-H3K4me3"="pink", "CTCF-only" = "royalblue","none"="gray"))
+dev.off()
+
+```
+
+## Fig 1C: GREAT enrichment
+
+
+```{r, eval=F}
+library(rGREAT)
+
+set.seed(123)
+union_combine_reduced<-readRDS("union_combine_reduced.rds")
+
+res_none<-great(union_combine_reduced[which(union_combine_reduced$encodeLabel =="none"),],"GO:BP", "hg38", extension=500000, background=union_combine_reduced)
+GO_none<-res_none@table
+GO_none$encodeLabel<-"none"
+
+res_dELS<-great(union_combine_reduced[which(union_combine_reduced$encodeLabel =="dELS"),], "GO:BP","hg38", extension=500000, background=union_combine_reduced)
+GO_dELS<-res_dELS@table
+GO_dELS$encodeLabel<-"dELS"
+
+
+res_pELS<-great(union_combine_reduced[which(union_combine_reduced$encodeLabel =="pELS"),], "GO:BP","hg38", extension=500000, background=union_combine_reduced)
+GO_pELS<-res_pELS@table
+GO_pELS$encodeLabel<-"pELS"
+
+
+
+res_PLS<-great(union_combine_reduced[which(union_combine_reduced$encodeLabel =="PLS"),], "GO:BP","hg38", extension=500000, background=union_combine_reduced)
+GO_PLS<-res_PLS@table
+GO_PLS$encodeLabel<-"PLS"
+
+
+GO_ALL<-rbind(GO_none, GO_dELS, GO_pELS, GO_PLS)
+GO_ALL<-GO_ALL[which(GO_ALL$gene_set_size<1000),]
+top<-GO_ALL[which(GO_ALL$encodeLabel!="dELS"),] %>% group_by(encodeLabel) %>% top_n(n=5, wt=-p_adjust)
+
+GO_top<-GO_ALL[which(GO_ALL$id %in% top$id),]
+GO_top$description<-factor(GO_top$description, levels=rev(top$description))
+GO_top$encodeLabel<-factor(GO_top$encodeLabel, levels=c("none","dELS","pELS","PLS"))
+pdf("GO_enrichment_dotPlot_ENCODE_annot.pdf", width=10, height=6)
+ggplot(GO_top, aes(x=encodeLabel,y=description, color=-log10(p_adjust), size=log2(fold_enrichment)))+geom_point()+theme_bw()+scale_color_gradient2(low="blue",mid="purple",high="red", midpoint=2, na.value="red", limits=c(0,5))+scale_radius(range=c(1,7), breaks=c(-1.5,-1,0,1,1.5), labels=c(-1.5,-1,0,1,1.5))
+dev.off()
+
+
+GO_ALL<-GO_ALL[which(GO_ALL$p_adjust<0.05),]
+write.csv(GO_ALL, "GREAT_GO_enrichment_significant.csv")
+```
+
+
+
+# Supp Fig 1:
+
+## Fig S1C: Regions per Tissue
+
+```{r, eval=F}
+
+union_large = c(union_CB,union_DLPFC,union_FP,union_OL)
+union_large$type <- "bulk"
+mcols(union_large)$tissue_type <- paste(union_large$tissue,union_large$type,sep = "_")
+
+union_sort_all = c(union_DLPFC_NEUN,union_DLPFC_OLIG,union_DLPFC_NEG,union_FP_NEUN,union_FP_OLIG,union_FP_NEG ,union_OL_NEUN,union_OL_OLIG,union_OL_NEG)
+mcols(union_sort_all)$tissue_type <- paste(union_sort_all$tissue,union_sort_all$type,sep = "_")
+
+union_combine <- c(union_large,union_sort_all)
+union_combine$boundCat <- ifelse(union_combine$count<6,"<5 Factors",
+                                         ">5 Factors")
+
+tab_sort_combine = as.data.frame(union_combine, row.names = NULL)
+orderBind <- c(">5 Factors","<5 Factors")
+tab_sort_combine$boundCat <- factor(tab_sort_combine$boundCat,levels = orderBind)
+orderBind <- c("CB_bulk","DLPFC_bulk","FP_bulk","OL_bulk","DLPFC_NEUN","FP_NEUN","OL_NEUN","DLPFC_OLIG","FP_OLIG","OL_OLIG","DLPFC_NEG","FP_NEG","OL_NEG") # set order of columns
+orderBind <- rev(orderBind)
+tab_sort_combine$tissue_type <- factor(tab_sort_combine$tissue_type,levels = orderBind) # set order of columns
+
+
+# showing how many factors are bound per region
+p <- ggplot(tab_sort_combine,aes(x=tissue_type, fill=boundCat)) + geom_bar() + ylim(0,120000) +
+  scale_fill_manual(values=c("gray","black")) +
+  coord_flip() +
+  theme_classic() +
+  theme(axis.text=element_text(size=15)) + theme(axis.title = element_text(size = 20),
+    axis.text.x = element_text(angle=90,size = 15,vjust = 0.5)) + theme(plot.caption = element_text(hjust = 0.5),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(face = "bold"),
+    plot.title = element_text(size = 15),
+    legend.title = element_blank(),
+    legend.text = element_text(size=15),
+    legend.position="top") +
+  labs(x = NULL, y = "Total Regions per Tissue") +
+  guides(fill = guide_legend(reverse = TRUE))
+ggsave("factors_bound_per_type_combine.pdf",p)
+
+
+
+
+
+```
+
+
+## Fig S1D: ENCODE Annotation by TF
+
+```{r, eval=F}
+unlist_DLPFC<-readRDS("unlist_DLPFC.rds")
+
+unlist_DLPFC$tissue<-  "DLPFC"
+unlist_DLPFC$index<-seq(1, length(unlist_DLPFC))
+all<-unlist_DLPFC
+names(all)<-NULL
+#load encode cre track
+load("iCellGABA_CRE_ENCODEstyle_GR.Rvar")
+enc=full_annot_encode_cre_def_GR
+enc<-enc[!grepl("iCell",enc$accesionLabel),]
+enc<-resize(enc, fix="center", width=250)
+#load cpg island and olap with CREs
+cpg<-import("scAnalysis/CpG_islands.bed")
+o<-findOverlaps(enc, cpg)
+enc$encodeLabel<-as.character(enc$encodeLabel)
+enc$cpg<-"Non-CGI"
+enc[queryHits(o)]$cpg<-"CGI"
+enc$cre_cpg<-ifelse(enc$encodeLabel=="PLS",paste0(enc$encodeLabel,"_",enc$cpg), enc$encodeLabel)
+
+#olap
+ol_enc2<-findOverlaps(enc, all,minoverlap=100)
+#add info to peak calls
+c2_enc<-all[subjectHits(ol_enc2),]
+c2_enc$encLab<-enc[queryHits(ol_enc2),]$encodeLabel
+c2_enc<-c2_enc[order(c2_enc$encLab, decreasing=F),]
+c2_enc<-unique(c2_enc)
+#merge back so that get one's that didn't overlap any annotation
+d2<-merge(as.data.frame(c2_enc), as.data.frame(all), by=c("index","tissue","name"), all=T)
+d2$encLab<-ifelse(is.na(d2$encLab),"No Annotation", d2$encLab)
+
+
+df<-as.data.frame(prop.table(table(d2[which(d2$tissue=="DLPFC"),]$encLab, d2[which(d2$tissue=="DLPFC"),]$name),2))
+df$tissue<-"DLPFC"
+df<-df[order(df$Var1,-df$Freq),]
+df$Var2<-factor(df$Var2, levels=unique(df$Var2))
+
+df$Var1<-factor(df$Var1, levels=c("PLS","pELS","dELS","DNase-H3K4me3","CTCF-only","No Annotation"))
+
+pdf("BrainTF_encode_cCRE_prop_wCGI.pdf", width=5, height=10)
+ggplot(df, aes(x=Freq,y=Var2, fill=Var1))+geom_bar(stat="identity")+xlab("Proportion of Peaks")+ylab("TF")+theme_classic()+scale_fill_manual(values=c("red","orange","gold","lightpink","dodgerblue","grey54"))+theme(legend.position="right", axis.text=element_text(size=5),axis.title=element_text(size=15), legend.text=element_text(size=12))
+dev.off()
+
+
+
+
+
+
+```
+
+
+
+# Figure 2: Comparison of ChIP-seq profile of DAPs from DLPFC-bulk.
+
+## Pre-processing: Signal quantification
+* Script for median signal intensity across regions
+  * this brings in bigwig data
+```{bash, eval=F}
+find `pwd`/*ChIPseq*/*/signal/macs2/pooled_rep/ -maxdepth 1 -name *fc.signal.bw -type f > path_to_bw.txt #bulk
+find `pwd`/*ChIPseq/*/signal/pooled-rep/ -maxdepth 1 -name *fc.signal.bigwig -type f > path_to_bw_sort.txt # sorted
+#for methylation
+find /BrainTF-WGBS/methylation/ -maxdepth 1 -name *.bw -type f > path_to_meth.txt
+find new_BrainTF-WGBS/EMseq/methylation/bigwig/ -maxdepth 1 -name *.bw -type f >> path_to_meth.txt
+```
+
+
+
+
+```{r ,eval=F}
+
+source("pull_vals_to_GR_from_bigWig.R")
+
+## ChIP-seq
+TF_bw=as.list(readLines("path_to_bw.txt", warn = FALSE)) # this is the raw file with original paths 
+
+TF_bw_DLPFC=TF_bw[grep("_DLPFC_",TF_bw)] 
+# these two lines extract the names of the mark from the bigwig
+names_bw=sapply(strsplit(unlist(TF_bw_DLPFC),"[/]"),"[[",7)
+names(TF_bw_DLPFC)=paste(sapply(strsplit(names_bw,"[_]"),"[[",1))
+# this lapply creates the signal
+list_vals_DLPFC <-lapply(TF_bw_DLPFC,function(x){
+  GRx <- read_and_bin_func_bigWig(bin_GR=union_DLPFC,bigWig_path=x)
+  out_vals <- GRx$bin_vals
+  return(out_vals)
+}) # for the big table (101 bigwigs), this may take a while on the cluster (3hours)
+all_vals_mat_DLPFC <- do.call(cbind, list_vals_DLPFC) # the data exists as a list of GRxs with one bigwig each; do.call(cbind) combines them into one
+mcols(union_DLPFC) <- as.data.frame(all_vals_mat_DLPFC) # add it to the GRx that you want
+saveRDS(union_DLPFC,"union_DLPFC_bw.rds")
+
+
+TF_bw_FP=TF_bw[grep("_FP_",TF_bw)] 
+# these two lines extract the names of the mark from the bigwig
+names_bw=sapply(strsplit(unlist(TF_bw_FP),"[/]"),"[[",7)
+names(TF_bw_FP)=paste(sapply(strsplit(names_bw,"[_]"),"[[",1))
+# this lapply creates the signal
+list_vals_FP <-lapply(TF_bw_FP,function(x){
+  GRx <- read_and_bin_func_bigWig(bin_GR=union_FP,bigWig_path=x)
+  out_vals <- GRx$bin_vals
+  return(out_vals)
+}) # for the big table (101 bigwigs), this may take a while on the cluster (3hours)
+all_vals_mat_FP <- do.call(cbind, list_vals_FP) # the data exists as a list of GRxs with one bigwig each; do.call(cbind) combines them into one
+mcols(union_FP) <- as.data.frame(all_vals_mat_FP) # add it to the GRx that you want
+saveRDS(union_FP,"union_FP_bw.rds")
+
+
+TF_bw_OL=TF_bw[grep("_OL_",TF_bw)] 
+# these two lines extract the names of the mark from the bigwig
+names_bw=sapply(strsplit(unlist(TF_bw_OL),"[/]"),"[[",7)
+names(TF_bw_OL)=paste(sapply(strsplit(names_bw,"[_]"),"[[",1))
+# this lapply creates the signal
+list_vals_OL <-lapply(TF_bw_OL,function(x){
+  GRx <- read_and_bin_func_bigWig(bin_GR=union_OL,bigWig_path=x)
+  out_vals <- GRx$bin_vals
+  return(out_vals)
+}) # for the big table (101 bigwigs), this may take a while on the cluster (3hours)
+all_vals_mat_OL <- do.call(cbind, list_vals_OL) # the data exists as a list of GRxs with one bigwig each; do.call(cbind) combines them into one
+mcols(union_OL) <- as.data.frame(all_vals_mat_OL) # add it to the GRx that you want
+saveRDS(union_OL,"union_OL_bw.rds")
+
+
+TF_bw_CB=TF_bw[grep("_CB_",TF_bw)] 
+# these two lines extract the names of the mark from the bigwig
+names_bw=sapply(strsplit(unlist(TF_bw_CB),"[/]"),"[[",7)
+names(TF_bw_CB)=paste(sapply(strsplit(names_bw,"[_]"),"[[",1))
+# this lapply creates the signal
+list_vals_CB <-lapply(TF_bw_CB,function(x){
+  GRx <- read_and_bin_func_bigWig(bin_GR=union_CB,bigWig_path=x)
+  out_vals <- GRx$bin_vals
+  return(out_vals)
+}) # for the big table (101 bigwigs), this may take a while on the cluster (3hours)
+all_vals_mat_CB <- do.call(cbind, list_vals_CB) # the data exists as a list of GRxs with one bigwig each; do.call(cbind) combines them into one
+mcols(union_CB) <- as.data.frame(all_vals_mat_CB) # add it to the GRx that you want
+saveRDS(union_CB,"union_CB_bw.rds")
+
+
+## sorted here
+TF_bw=as.list(readLines("path_to_bw_sort.txt", warn = FALSE))
+#TF_bw=TF_bw[-grep("H3K",TF_bw)] 
+TF_bw=TF_bw[grep("DLPFC",TF_bw)]
+# these two lines extract the names of the mark from the bigwig
+names_bw=sapply(strsplit(unlist(TF_bw),"[/]"),"[[",7)
+names_bw=gsub("_Output","",names_bw)
+names_bw=gsub("_sorted","",names_bw)
+names_bw=gsub("Neg","NEG",names_bw)
+names_bw=gsub("NeuN","NEUN",names_bw)
+names_bw=gsub("Neun","NEUN",names_bw)
+names_bw=gsub("Olig","OLIG",names_bw)
+names_bw=gsub("OLIg","OLIG",names_bw)
+
+names(TF_bw)=paste(sapply(names_bw,"[[",1))
+TF_bw=TF_bw[grep("NEUN",names(TF_bw))] # grep by name if you have changed from original
+
+TF_bw <- append(TF_bw,ATAC_bw_DLPFC["ATAC_DLPFC_NeuN"]) # add ATAC-seq to list
+
+# this lapply creates the signal
+list_vals <-lapply(TF_bw,function(x){
+  GRx <- read_and_bin_func_bigWig(bin_GR=union_DLPFC_NEUN,bigWig_path=x)
+  out_vals <- GRx$bin_vals
+  return(out_vals)
+}) # for the big table (101 bigwigs), this may take a while on the cluster (3hours)
+all_vals_mat <- do.call(cbind, list_vals) # the data exists as a list of GRxs with one bigwig each; do.call(cbind) combines them into one
+union_DLPFC_NEUN_bw <- union_DLPFC_NEUN
+mcols(union_DLPFC_NEUN_bw) <- as.data.frame(all_vals_mat) # add it to the GRx that you want
+saveRDS(union_DLPFC_NEUN_bw,"union_DLPFC_NEUN_bw.rds")
+
+
+## sorted over promoter regions
+GRCh38_prom <- promoters(GRCh38_E83, upstream = 1000, downstream = 1000)
+seqlevelsStyle(GRCh38_prom) <- "UCSC"
+
+# this lapply creates the signal
+list_vals <-lapply(TF_bw,function(x){
+  GRx <- read_and_bin_func_bigWig(bin_GR=GRCh38_prom,bigWig_path=x)
+  out_vals <- GRx$bin_vals
+  return(out_vals)
+}) # for the big table (101 bigwigs), this may take a while on the cluster (3hours)
+all_vals_mat <- do.call(cbind, list_vals) # the data exists as a list of GRxs with one bigwig each; do.call(cbind) combines them into one
+prom_DLPFC_NEUN_bw <- GRCh38_prom
+mcols(prom_DLPFC_NEUN_bw) <- as.data.frame(all_vals_mat) # add it to the GRx that you want
+saveRDS(prom_DLPFC_NEUN_bw,"prom_DLPFC_NEUN_bw.rds")
+prom_DLPFC_NEUN_bw <- readRDS("prom_DLPFC_NEUN_bw.rds")
+prom_DLPFC_NEUN_bw <- prom_DLPFC_NEUN_bw[order(prom_DLPFC_NEUN_bw$'H3K4me3_DLPFC-NEUN',decreasing=TRUE)]
+
+ol<-findOverlaps(GRCh38_prom,prom_DLPFC_NEUN_bw,minoverlap =100)
+mcols(prom_DLPFC_NEUN_bw)$gene_name<-"none"
+prom_DLPFC_NEUN_bw[subjectHits(ol)]$gene_name<-mcols(GRCh38_prom)$gene_name[queryHits(ol)]
+
+
+
+## ATAC
+ATAC_bw=as.list(readLines("ATAC_signal_BrainTF.txt", warn = FALSE))
+
+ATAC_bw_DLPFC <- ATAC_bw[grep("_DLPFC_",ATAC_bw)] 
+#ATAC_bw_DLPFC <- ATAC_bw_DLPFC[-grep("1224",ATAC_bw)] 
+# these two lines extract the names of the mark from the bigwig
+names_bw <- sapply(strsplit(unlist(ATAC_bw_DLPFC),"[/]"),"[[",10)
+names_bw=gsub("1238_1242_DLPFC_NeuN","1238_1242_DLPFC_NEUN",names_bw)
+names(ATAC_bw_DLPFC) <- paste0("ATAC_DLPFC_",sapply(strsplit(names_bw,"_"),"[[",4))
+# this lapply creates the signal
+list_vals_DLPFC <-lapply(ATAC_bw_DLPFC,function(x){
+  GRx <- read_and_bin_func_bigWig(bin_GR=union_DLPFC,bigWig_path=x)
+  out_vals <- GRx$bin_vals
+  return(out_vals)
+}) # for the big table (101 bigwigs), this may take a while on the cluster (3hours)
+all_vals_mat_DLPFC <- do.call(cbind, list_vals_DLPFC) # the data exists as a list of GRxs with one bigwig each; do.call(cbind) combines them into one
+mcols(union_DLPFC) <- as.data.frame(all_vals_mat_DLPFC) # add it to the GRx that you want
+saveRDS(union_DLPFC,"union_DLPFC_bw_ATAC.rds")
+
+#read it in if you saved it elsewhere
+union_DLPFC_bw_ATAC <- readRDS("union_DLPFC_bw_ATAC.rds")
+
+
+## methylation
+meth_bw=as.list(readLines("path_to_meth.txt", warn = FALSE))
+
+meth_bw_DLPFC <- meth_bw[grep("_DLPFC_",meth_bw)] 
+#meth_bw_DLPFC <- meth_bw_DLPFC[-grep("1224",meth_bw)] 
+# these two lines extract the names of the mark from the bigwig
+names_bw <- sapply(strsplit(unlist(meth_bw_DLPFC),"[/]"),"[[",9)
+names_bw <- sapply(strsplit(unlist(names_bw),"[.]"),"[[",1)
+names_bw=gsub("_DLPFC","",names_bw)
+names(meth_bw_DLPFC) <- paste0("meth_",names_bw)
+# this lapply creates the signal
+list_vals_DLPFC <-lapply(meth_bw_DLPFC,function(x){
+  GRx <- read_and_bin_func_bigWig(bin_GR=union_DLPFC,bigWig_path=x)
+  out_vals <- GRx$bin_vals
+  return(out_vals)
+}) # for the big table (101 bigwigs), this may take a while on the cluster (3hours)
+all_vals_mat_DLPFC <- do.call(cbind, list_vals_DLPFC) # the data exists as a list of GRxs with one bigwig each; do.call(cbind) combines them into one
+mcols(union_DLPFC) <- as.data.frame(all_vals_mat_DLPFC) # add it to the GRx that you want
+saveRDS(union_DLPFC,"union_DLPFC_bw_meth.rds")
+
+#read it in if you saved it elsewhere
+union_DLPFC_bw_meth <- readRDS("union_DLPFC_bw_meth.rds")
+
+
+```
+
+## Fig 2A: Heatmap
+
+
+```{r, eval=F}
+union_DLPFC_bw<-readRDS("union_DLPFC_bw.rds")
+histone<-readRDS("list_histone_bulk.rds")
+
+mat<-as.matrix(mcols(union_DLPFC_bw))
+mat<-mat[,!grepl("H3K", colnames(mat))]
+peak_pca<-prcomp(t(mat), scale=T)
+pca_df<-as.data.frame(peak_pca$x[,1:20])
+cor_mat<-cor(t(pca_df))
+
+
+Num_all<-c()
+Num_HOT<-c()
+MeanCoop<-c()
+MeanCoop_NOT<-c()
+PropProm<-c()
+PropProm_NOT<-c()
+PropProm_HOT<-c()
+avgSignal<-c()
+avgSignal_outsidePeaks<-c()
+Prom_HOT<-c()
+Prop_k4me3<-c()
+for(i in 1:length(unique(unlist_DLPFC$name))){
+  tmp<-union_DLPFC[grepl(unique(unlist_DLPFC$name)[i], union_DLPFC$TF),]
+  tmp_bw<-subsetByOverlaps(union_DLPFC_bw, tmp)
+  avgSignal<-c(avgSignal, colMeans(as.matrix(mcols(tmp_bw)))[ unique(unlist_DLPFC$name)[i]])
+  tmp_bw<-subsetByOverlaps(union_DLPFC_bw, tmp, invert=T)
+  avgSignal_outsidePeaks<-c(avgSignal_outsidePeaks, colMeans(as.matrix(mcols(tmp_bw)))[ unique(unlist_DLPFC$name)[i]])
+  Num_all<-c(Num_all, length(tmp))
+  Num_HOT<-c(Num_HOT, length(tmp[which(tmp$HOT=="HOT"),]))
+  Prom_HOT<-c(Prom_HOT,  length(tmp[which(tmp$HOT=="HOT"),])/length(tmp))
+  Prop_k4me3<-c(Prop_k4me3, length(subsetByOverlaps(tmp, histone$H3K4me3_DLPFC))/ length(tmp))
+   PropProm<-c(PropProm, length(subsetByOverlaps(tmp, enc[which(enc$encodeLabel=="PLS")]))/length(tmp) )
+  PropProm_NOT<-c(PropProm_NOT, length(subsetByOverlaps(tmp[which(tmp$HOT=="NOT")], enc[which(enc$encodeLabel=="PLS")]))/length(tmp[which(tmp$HOT=="NOT")]))
+  PropProm_HOT<-c(PropProm_HOT, length(subsetByOverlaps(tmp[which(tmp$HOT=="HOT")], enc[which(enc$encodeLabel=="PLS")]))/length(tmp[which(tmp$HOT=="HOT")]))
+  }
+
+names(PropProm)<-unique(unlist_DLPFC$name)
+names(Num_all)<-unique(unlist_DLPFC$name)
+PropProm<-PropProm[rownames(cor_mat)]
+PropProm<-ifelse(is.na(PropProm)==T, 0,PropProm)
+Num_all<-Num_all[rownames(cor_mat)]
+Num_all<-ifelse(is.na(Num_all)==T, 0,Num_all)
+
+avgSignal<-ifelse(is.na(avgSignal)==T, 0,avgSignal)
+avgSignal<-avgSignal[rownames(cor_mat)]
+avgSignal_outsidePeaks<-ifelse(is.na(avgSignal_outsidePeaks)==T, 0,avgSignal_outsidePeaks)
+avgSignal_outsidePeaks<-avgSignal_outsidePeaks[rownames(cor_mat)]
+
+names(Prom_HOT)<-unique(unlist_DLPFC$name)
+Prom_HOT<-Prom_HOT[rownames(cor_mat)]
+Prom_HOT<-ifelse(is.na(Prom_HOT)==T, 0,Prom_HOT)
+
+names(Prop_k27)<-unique(unlist_DLPFC$name)
+Prop_k27<-Prop_k27[rownames(cor_mat)]
+Prop_k27<-ifelse(is.na(Prop_k27)==T, 0,Prop_k27)
+
+
+
+
+ha<-HeatmapAnnotation(PropProm=PropProm, avgSignal=avgSignal, col=list(PropProm=colorRamp2(c(0,0.001,0.2,0.5,0.9), c("slategray","white", "white","green","forestgreen")) , avgSignal=colorRamp2(c(0,5,10), c("white","skyblue","navy")),  annotation_name_side = "left"))
+
+pdf("PC_cor_TF_ALL_wAnnotations_bottomVersion.pdf", width=12, height=12)
+h1<-draw(Heatmap(cor_mat,col=rev(brewer.pal(name = "RdYlBu", n=11))
+,  column_dend_height=unit(4, "cm"), row_names_gp = gpar(fontsize = 6), cluster_columns=T, column_names_gp=gpar(fontsize=6), clustering_distance_rows="euclidean", clustering_distance_column="euclidean",  name="r", row_km=3, column_km=3,  show_parent_dend_line = T, show_row_dend=F, column_dend_side="bottom", bottom_annotation=ha, row_names_side="left"),  heatmap_legend_side = "left", annotation_legend_side = "left")
+h1
+dev.off()
+
+```
+
+
+## Fig 2B: boxplots
+```{r, eval=F}
+df<-data.frame(Promoter=PropProm, ChIP_Peaks=Num_all, ChIP_Signal=avgSignal,   H3K4me3=Prop_k4me3)
+co_list<-as.list(column_order(h1))
+co<-c(co_list$`1`, co_list$`2`, co_list$`3`)
+split<-c(rep(1,lengths(co_list)[3]), rep(2,lengths(co_list)[2]),rep(3,lengths(co_list)[1])) 
+df<-df[co,]
+df$group<-split
+
+df.m<-melt(df, id.vars="group")
+pdf("boxplot_cluster_PC_cor.pdf", width=8, height=5)
+ggplot(df.m, aes(x=variable, y=value, fill=as.factor(group)))+geom_boxplot()+theme_classic()+facet_wrap(~variable,scales="free", ncol=5)+theme(axis.text.x=element_blank())+scale_fill_manual(values=c("blue", "gold","red"), name="cluster")
+dev.off()
+
+
+```
+
+## Fig 2C: Signal tracks
+```{r, eval=F}
+library(Signac)
+library(RcppRoll)
+library(ggforce)
+library(fastmatch)
+source("BigwigTrack.R")
+source("Bed_PeakPlot.R")
+source("plotGWAS.R")
+source("plotLink.R")
+source("plot_dependencies_GenePlot.R")
+source("Bed_GWASPlot.R")
+anno <- readRDS("BrainTF/GeneAnnotations.rds") # big! remove when done
+
+
+#PLOT
+region <- GRanges("chr3:75554941-78157569")
+region <- GRanges("chr3:75235214-77988335")
+
+PKNOX1_bw <- "PKNOX1_DLPFC_Output/signal/macs2/pooled_rep/30M.GSLv5-8_i7_110.merge.nodup_30M.GSLv5-8_i7_114.merge.nodup.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+EGR1_bw <- "EGR1_DLPFC_Output/signal/macs2/pooled_rep/30M.GSLv5-8_i7_53-GSLv5-8_i5_44.merge.nodup_pooled.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+REST_bw <- "NRSF_DLPFC_Output/signal/macs2/pooled_rep/30M.GSLv5-8_i7_158.merge.nodup_30M.GSLv5-8_i7_162.merge.nodup.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+EHMT2_bw <- "EHMT2_DLPFC_Output/signal/macs2/pooled_rep/30M.GSLv5-8_i7_92.merge.nodup_30M.GSLv5-8_i7_96.merge.nodup.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+SATB2_bw <- "SATB2_DLPFC_Output/signal/macs2/pooled_rep/30M.GSLv5-8_i7_98.merge.nodup_30M.GSLv5-8_i7_102.merge.nodup.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+TBR1_bw <- "TBR1_DLPFC_Output/signal/macs2/pooled_rep/40M.GSLv5-8_i7_108.merge.nodup_30M.GSLv5-8_i7_94.merge.nodup.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+NFIB_bw <- "NFIB_DLPFC_Output/signal/macs2/pooled_rep/30M.GSLv5-8_i7_20.merge.nodup_30M.GSLv5-8_i7_24.merge.nodup.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+NFIC_bw <- "JNFIC_DLPFC_Output/signal/macs2/pooled_rep/30M.GSLv5-8_i7_02.merge.nodup_30M.GSLv5-8_i7_06.merge.nodup.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+CTCF_bw <- "CTCF_DLPFC_Output/signal/macs2/pooled_rep/30M.GSLv5-8_i7_71-GSLv5-8_i5_26.merge.nodup_pooled.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+RAD21_bw <- "RAD21_DLPFC_Output/signal/macs2/pooled_rep/25M.GSLv5-8_i7_20-GSLv5-8_i5_77.merge.nodup_pooled.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+
+H3K4me3_bw <- "H3K4me3_DLPFC_Output/signal/macs2/pooled_rep/25M.GSLv5-8_i7_38-GSLv5-8_i5_59.merge.nodup_pooled.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.pval.signal.bw"
+H3K27ac_bw <- "H3K27ac_DLPFC_dedup_50M_Output/signal/macs2/pooled_rep/50M.dedup.GSLv5-8_i7_20.merge.nodup_50M.dedup.GSLv5-8_i7_29.merge.nodup.tagAlign_x_50M.dedup.GSLv5-8_i7_02.merge.nodup_50M.dedup.GSLv5-8_i7_11.merge.nodup.tagAlign.pval.signal.bw"
+
+
+bw_list <- list(H3K4me3_bw,H3K27ac_bw,PKNOX1_bw,EGR1_bw,REST_bw,EHMT2_bw,SATB2_bw,TBR1_bw,NFIB_bw,NFIC_bw,CTCF_bw,RAD21_bw)
+names(bw_list) <- c("H3K4me3","H3K27ac","PKNOX1","EGR1","REST","EHMT2","SATB2","TBR1","NFIB","NFIC","CTCF","RAD21")
+
+
+p1 <-  BigwigTrack(region,smooth = 1000, bigwig= bw_list, bigwig.scale = "separate", type="line")  +
+  theme(axis.text=element_blank(), axis.ticks=element_blank(), legend.position="none") + xlab("") + scale_color_manual(values=c("black","black","red","red","orange","orange","gold","gold","darkgreen","darkgreen","blue","blue")) + ylab("ChIP-seq Signal")
+
+g1 <- AnnotationPlot(anno, region)
+plot_track <- CombineTracks(plotlist=list(p1,g1), heights=c(10,1))
+
+pdf("browsertracks_pairs.pdf", width=5, height=8 )
+plot_track
+dev.off()
+
+```
+
+
+
+# Supp Fig 2:
+## A: Values by PC
+
+```{r, eval=F}
+
+pca_df$TF<-rownames(pca_df)
+pca_melt<-melt(pca_df) #this is now df with columns: TF, PC, value
+pdf("PCA_TF.pdf")
+ggplot(pca_melt, aes(x=TF,y=value))+geom_bar(stat="identity")+facet_wrap(~variable, scales="free")+theme_classic()
+dev.off()
+```
+
+
+## B: PC1 v PC2
+```{r, eval=F}
+pca_df$TF<-rownames(pca_df)
+pca_df$num_peaks<-Num_all
+pca_df$proportion_promoter<-PropProm
+
+pdf("PCA_TF_PC1_PC2.pdf", width=5, height=5)
+ggplot(pca_df, aes(x=PC1,y=PC2))+geom_point()+theme_classic()+xlab("PC1 (38.6%)")+ylab("PC2 (13.9%)")+geom_text_repel(aes(label=TF))
+dev.off()
+```
+
+## C: Pareto
+```{r, eval=F}
+results<-peak_pca
+var_explained = results$sdev^2 / sum(results$sdev^2)
+df<-data.frame(var_explained=var_explained, PC=seq(1,length(var_explained)))
+df$cummulative<-NA
+for(i in 1:nrow(df)){
+  df$cummulative[i]<-sum(df$var_explained[1:i])
+}
+pdf("PCA_first20PCs_scree.pdf", width=5,height=4)
+ggplot(df[which(df$PC<21),], aes(x=PC))+geom_bar(aes(y=var_explained), stat="identity", fill="skyblue")+geom_line(aes(y=cummulative))+geom_point(aes(y=cummulative))+theme_classic()+ylab("variance explained")+ylim(0,1)+scale_x_continuous(breaks=seq(1,20,by=1))
+dev.off()
+
+
+```
+
+## D: Neuronal Hub
+
+# Figure 3: Identification and characterization of HOT sites. 
+## Fig 3A: 90th percentile
+
+```{r, eval=F}
+q90_CB <- quantile(union_CB$count,0.9) # 90th percentile. estimate for HOT-ness
+q90_DLPFC <- quantile(union_DLPFC$count,0.9) # 90th percentile. estimate for HOT-ness
+q90_FP <- quantile(union_FP$count,0.9) # 90th percentile. estimate for HOT-ness
+q90_OL <- quantile(union_OL$count,0.9) # 90th percentile. estimate for HOT-ness
+
+union_CB$HOT <- ifelse(union_CB$count>q90_CB,"HOT","NOT")
+union_DLPFC$HOT <- ifelse(union_DLPFC$count>q90_DLPFC,"HOT","NOT")
+union_FP$HOT <- ifelse(union_FP$count>q90_FP,"HOT","NOT")
+union_OL$HOT <- ifelse(union_OL$count>q90_OL,"HOT","NOT")
+
+union_large = c(union_CB,union_DLPFC,union_FP,union_OL)
+
+#cumulative distribution plot
+
+pdf("ecdf_DLPFC_count.pdf",width = 4, height = 4)
+ggplot(tab_union_large,aes(x=count,color=tissue)) + stat_ecdf(geom = "step",linewidth=1.5) +
+  theme_classic() +
+  scale_x_continuous(name="Factors Bound") +
+  scale_y_continuous(breaks=seq(0,1,0.2)) + ylab("Proportion of Peaks")
+dev.off()
+
+```
+
+## Fig 3B: annotation
+```{r ,eval=F}
+# add ENCODE CRE annotations to union_DLPFC
+enc3 <- read.table("GRCh38-cCREs_v3.bed")
+colnames(enc3)[1:6]<-c("seqnames","start","end","V4","V5","ccre")
+enc3$encodeLabel<-sapply(strsplit(enc3$ccre,","),`[`,1)
+enc3$ccre2<-sapply(strsplit(enc3$ccre,","),`[`,2)
+enc3 <- makeGRangesFromDataFrame(enc3,keep.extra.columns=TRUE)
+# sort to prioritize PLS in downstream overlaps
+df_order <- order(enc3$encodeLabel,start(enc3),decreasing = FALSE )
+enc3 <- enc3[df_order]
+
+
+test <- union_combine
+ol<-findOverlaps(enc3,test)
+mcols(test)$encodeLabel<-"none" #set empty var to write into
+test[subjectHits(ol)]$encodeLabel<-mcols(enc3)$encodeLabel[queryHits(ol)]
+
+test$CGI= test %over% CGI
+test$CGI[test$CGI == TRUE] <- "CGI"
+test$CGI[test$CGI == FALSE] <- 'notCGI'
+
+
+test$creCGI <- ifelse(test$CGI=="CGI" & test$encodeLabel=="PLS",paste0(test$encodeLabel,"_CGI"),test$encodeLabel)
+
+
+# group HOT and NOT to plot together
+t1 <- as.data.frame(mcols(test))
+t2 <- t1 %>% group_by(HOT) %>%
+  count(creCGI) %>%
+  mutate(Freq = 100*n/sum(n))
+t2$fraction <- round(t2$Freq,digits=1)
+t2 <- t2[which(t2$fraction>0.5),] #remove very small ones that get smushed together and are not visible
+
+orderBind <- c("PLS_CGI","PLS","pELS","dELS","DNase-H3K4me3","DNase-CTCF-only","CTCF-only","none")
+orderBind <- rev(orderBind)
+t2$creCGI <- factor(t2$creCGI,levels = orderBind)
+
+
+pdf("bar_CRE_HOT_union.pdf",height=8,width=8)
+ggplot(t2,aes(fill=creCGI,y=fraction, x=HOT)) + theme(axis.text.x = element_text(angle = 90, size = 7)) + geom_bar(stat= "identity") + theme(axis.text = element_text(size = 15)) + theme(axis.text.x = element_text(size = 15)) +
+scale_fill_manual("Annotation", values = c("PLS_CGI"="red3","PLS"="red1", "pELS"="orange","dELS" = "gold","DNase-H3K4me3"="pink","DNase-CTCF-only"="green","CTCF-only" = "royalblue","none"="gray")) +
+  theme_classic() +
+  scale_x_discrete(labels=c("HOT","not-HOT")) +
+  geom_text(aes(label = paste0(fraction, "%")), position = position_stack(vjust = 0.5), size=7, fontface="bold") +
+  theme(text = element_text(size = 25,face="bold"),
+        legend.text = element_text(size = 30),
+        legend.title = element_text(size = 30))
+dev.off()
+
+
+```
+
+## Fig 3C: upset plot
+```{r, eval=F}
+
+union_DLPFC<-GRanges(read.csv("union_DLPFC.csv"))
+union_DLPFC_OLIG<-GRanges(read.csv("union_DLPFC_OLIG.csv"))
+union_DLPFC_NEUN<-GRanges(read.csv("/union_DLPFC_NEUN.csv"))
+union_DLPFC_NEG<-GRanges(read.csv("union_DLPFC_NEG.csv"))
+
+union_combine<-c(union_DLPFC, union_DLPFC_NEG,union_DLPFC_OLIG,union_DLPFC_NEUN)
+
+HOT_K562 <- read.table("K562_Filtered_HOT_Sites_Number_Identity_Table.txt",header = TRUE)
+HOT_K562 <- makeGRangesFromDataFrame(HOT_K562,keep.extra.columns=TRUE)
+
+HOT_HepG2 <- read.table("/HepG2_Filtered_HOT_Sites_Number_Identity_Table.txt",header = TRUE)
+HOT_HepG2 <- makeGRangesFromDataFrame(HOT_HepG2,keep.extra.columns=TRUE)
+
+HOT_combine <- union_combine[which(union_combine$HOT=="HOT"),]
+HOT_reduce <- reduce(HOT_combine)
+
+HOT_DLPFC <- union_combine[which(union_combine$tissue=="DLPFC"),]
+HOT_DLPFC <- HOT_DLPFC[which(HOT_DLPFC$HOT=="HOT"),]
+
+
+HOT_HepG2$tissue <- "HepG2"
+HOT_K562$tissue <- "K562"
+# adding in HOT sites from ENCODE
+HOT_combine_HK <- c(HOT_combine,HOT_HepG2,HOT_K562)
+list_HOT_combine <- split(HOT_combine_HK, HOT_combine_HK$tissue_type) # split grange object into a single list
+HOT_combine_reduced = reduce(HOT_combine_HK)
+
+
+# complexUpset to fill in the bars
+library(ComplexUpset)
+# add cCRE status to each of the ranges
+tmp <- HOT_combine_reduced
+ol<-findOverlaps(enc3,tmp,minoverlap =100)
+mcols(tmp)$encodeLabel<-"none"
+tmp[subjectHits(ol)]$encodeLabel<-mcols(enc3)$encodeLabel[queryHits(ol)]
+
+
+tmp$CGI= tmp %over% CGI
+tmp$CGI[tmp$CGI == TRUE] <- "CGI"
+tmp$CGI[tmp$CGI == FALSE] <- 'notCGI'
+tmp$creCGI <- ifelse(tmp$CGI=="CGI" & tmp$encodeLabel=="PLS",paste0(tmp$encodeLabel,"_CGI"),tmp$encodeLabel)
+
+
+tmp <- as.data.frame(mcols(tmp))
+tmp <- tmp[,c(9,1,3,2,4,6,5)]
+cats <- colnames(tmp)[2:7] # subset to the columns that you want on upset
+
+
+orderBind <- c("PLS_CGI","PLS","pELS","dELS","DNase-H3K4me3","DNase-CTCF-only","CTCF-only","none")
+orderBind <- rev(orderBind)
+tmp$creCGI <- factor(tmp$creCGI,levels = orderBind)
+
+
+pdf("upset_HOT_DLPFC.pdf",width = 8, height = 4)
+upset(tmp,cats,
+      n_intersections = 11,
+      base_annotations = list('Intersection size'= intersection_size(
+        counts=FALSE,
+        mapping = aes(fill=creCGI)) + 
+          scale_fill_manual(values=c("PLS_CGI"="red3","PLS"="red1", "pELS"="orange", "dELS" = "gold","DNase-H3K4me3"="pink", "DNase-CTCF-only"="green","CTCF-only" = "royalblue","none"="gray"))
+        ),
+      width_ratio=0.1,
+      sort_sets=FALSE,
+      queries = list(
+        upset_query(set='DLPFC_NEUN',fill='blue'),
+        upset_query(set='DLPFC_OLIG',fill='green'),
+        upset_query(set='DLPFC_NEG',fill='red'),
+        upset_query(set='HepG2',fill='black'),
+        upset_query(set='K562',fill='black')
+      )
+      )
+dev.off()
+
+
+
+```
+
+
+
+
+```{r, eval=F}
+load("Housekeeping_Genes_Hounke_2021/Housekeeping_GenesHuman.RData")
+
+
+
+
+GRCh38_E83 <- rtracklayer::import("GRCh38_E83/genesets.gtf")
+GRCh38_E83 <- GRCh38_E83[GRCh38_E83$type %in% "gene",]
+GRCh38_E83@elementMetadata <- GRCh38_E83@elementMetadata[,c("gene_id","gene_name","gene_biotype")]
+GRCh38_E83<-GRCh38_E83[which(GRCh38_E83$gene_biotype=="protein_coding"),]
+
+gtf <- as.data.frame(GRCh38_E83)
+
+rpkms_gtf <- makeGRangesFromDataFrame(gtf,keep.extra.columns=TRUE)
+seqlevelsStyle(rpkms_gtf) <- "UCSC"
+promoters <- promoters(rpkms_gtf, upstream = 2000, downstream = 2000)
+
+promoters<-promoters[which(promoters$gene_name %in% Housekeeping_Genes$Gene.name),]
+
+
+HOT_reduced<-reduce(HOT_combine_HK)
+over<-findOverlaps(HOT_reduced, HOT_combine_HK)
+HOT_table<-cbind(queryHits(over),HOT_combine_HK[subjectHits(over)]$tissue)
+HOT_table<-as.data.frame(HOT_table)
+colnames(HOT_table)<-c("index","tissue")
+HOT_2<-HOT_table %>% group_by(index) %>% summarize(tissue=paste0(unique(tissue), collapse=","))
+HOT_2$index<-as.numeric(HOT_2$index)
+HOT_2<-HOT_2[order(HOT_2$index),]
+HOT_reduced$tissue<-NA
+HOT_reduced$tissue<-HOT_2$tissue
+
+HOT_reduced$count<-str_count( HOT_reduced$tissue,",")+1
+over<-findOverlaps(promoters, HOT_reduced)
+HOT_reduced$HK<-F
+HOT_reduced[subjectHits(over)]$HK<-T
+HOT_reduced$all<-ifelse(HOT_reduced$count==6, "All","not")
+
+
+chisq.test(table(HOT_reduced$all, HOT_reduced$HK))
+```
+
+
+## Fig 3D: density plot
+```{r, eval=F}
+
+splitList_count <- split(union_DLPFC, union_DLPFC$count) # split grange object into a single list
+
+# add mcol values from a GRx to each GRx in a list
+W <- list_ChIP_bulk_DLPFC[-grep("H3K",names(list_ChIP_bulk_DLPFC))]
+tfs <- unique(names(W))
+all_counts<-matrix(ncol=length(tfs),nrow=length(splitList_count))
+for(i in 1:length(splitList_count)){
+  for(j in 1:length(tfs)){
+    count <- length(splitList_count[[i]][grepl(tfs[j], splitList_count[[i]]$TF)])
+    all_counts[i,j]<-count
+  }
+}
+
+freq <- scale(all_counts, center=F, scale=colSums(all_counts))
+colnames(freq) <- tfs
+freq_t <- t(freq)
+
+
+# another way to do the scale function above
+freq<-c()
+for(i in 1:ncol(all_counts_t)){
+freq<-cbind(freq, all_counts_t[,i]/lengths(splitList_count)[i])
+}
+
+
+# plot the distribution of a few
+tmp <- as.data.frame(freq_t[c("HCFC1","NEUROD","SATB2"),]) # few
+tmp <- as.data.frame(t(tmp))
+tmp$bound <- 1:nrow(tmp) 
+tmp$bound <- as.numeric(tmp$bound)
+melt_tmp <- melt(tmp,id.vars="bound")
+
+pdf("skew_examples.pdf",width = 5, height = 2.5)
+ggplot(melt_tmp,aes(x=bound,y=value,fill=variable,color=variable)) + geom_area(position="identity",alpha=0.5) +
+  scale_fill_manual(values = c("NEUROD"="purple3","SATB2"="blue","HCFC1"="red")) +
+  scale_color_manual(values = c("NEUROD"="purple3","SATB2"="blue","HCFC1"="red")) +
+  xlab("Factors bound") + ylab("Density") + guides(fill=guide_legend(title="DAPs"),color=FALSE) +
+  theme_classic()
+dev.off()
+
+```
+
+## Fig 3E: Skewness distribution
+```{r, eval=F}
+
+
+list_ChIP_bulk_DLPFC<-split(unlist_DLPFC, ~name)
+
+# find the count of TFs (count) bound; this is DLPFC
+W2 <- GRangesList(list_ChIP_bulk_DLPFC) # convert list to Grangelist for findOverlaps
+skew_list <-lapply(W2,function(x){
+  ol <- findOverlaps(x, union_DLPFC)
+  out_vals <- unlist(mcols(union_DLPFC)$count[subjectHits(ol)])
+  return(out_vals)
+})
+
+
+
+skew_vals <- sapply(skew_list, skewness)
+skew_vals_DLPFC<-skew_vals
+median_vals <- sapply(skew_list, median)
+mean_vals <- sapply(skew_list, mean)
+# proportion of HOT sites per factor
+prop_HOT <-lapply(W2,function(x){
+  ol <- findOverlaps(x, union_DLPFC)
+  out_vals <- unlist(mcols(union_DLPFC)$HOT[subjectHits(ol)])
+  return(out_vals)
+})
+HOT_vals <-sapply(prop_HOT,function(x){length(x[x=="HOT"])/length(x)})
+
+
+tab_skew <- as.data.frame(cbind(skew_vals,mean_vals,HOT_vals))
+tab_skew$TF <- rownames(tab_skew)
+tab_skew$length <- lengths(W)
+
+
+
+tab_skew <- tab_skew[order(tab_skew$skew_vals,decreasing = TRUE),]
+orderBind <- tab_skew$TF
+tab_skew$TF <- factor(tab_skew$TF,levels = orderBind)
+#flipped so that HOT-skewed is going up (ie positive skew is more HOT)
+tab_skew$skew_vals_inv <- tab_skew$skew_vals*-1
+
+
+pdf("skew_barplot.pdf",width = 3, height = 7)
+ggplot(tab_skew,aes(x=TF,y=skew_vals_inv,fill=HOT_vals)) + geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_classic() +
+  theme(axis.text.y = element_text(size=5), legend.position = "top") +
+  scale_fill_gradient2(low = "blue3", high = "red",  mid="grey85", midpoint=0.5, name="Proportion HOT", ) +
+  labs(y="HOT skew")
+dev.off()
+
+
+```
+
+## Fig 3F: PKNOX1 density
+```{r, eval=F}
+
+TF="PKNOX1"
+props<-list()
+for (i in 1:length(union_list)){
+  if( grepl("NEG", names(union_list)[i]) ==F){ #remove NEG for this plot bc uninformative
+    W<-split(unlist_list[[i]], ~name)
+    n<-length(unique(unlist_list[[i]]$name))
+    W <- W[grepl(TF,names(W))]
+    W <- W[[1]]
+    counts<-as.numeric(subsetByOverlaps(union_list[[i]], W)$count)
+    props[[i]]<-counts/n
+  }
+}
+
+names(props)<-names(union_list)
+props<-props[-c(3,7,11)]
+
+#format
+p_unlist<-as.data.frame(unlist(props))
+p_unlist$group<-rownames(p_unlist)
+p_unlist$group<-gsub('[[:digit:]]+', '', p_unlist$group)
+p_unlist$group2<-gsub("union_","", p_unlist$group)
+colnames(p_unlist)[1]<-"PKNOX1"
+# which cell type did value come from
+p_unlist$ct<-sapply(strsplit(p_unlist$group2,"_", fixed=T),`[`,2)
+p_unlist$ct<-ifelse(is.na(p_unlist$ct)==T, "BULK", p_unlist$ct)
+p_unlist$ct<-factor(p_unlist$ct, levels=rev(c("BULK","OLIG","NEUN")))
+
+pdf("PKNOX1_skewness_density_plot.pdf", width=6, height=7)
+p1<-ggplot(p_unlist[which(p_unlist$PKNOX1<=1),], aes(x=PKNOX1,fill=ct, color=ct))+geom_density(alpha=0.65)+theme_classic()+xlab("")+scale_fill_manual(limits=c("BULK","OLIG","NEUN"), values=c("darkgoldenrod2","darkgreen","dodgerblue3"), name="Cell type")+scale_color_manual(limits=c("BULK","OLIG","NEUN"), values=c("darkgoldenrod2","darkgreen","dodgerblue3"), name="Cell type",guide="none")
+
+
+p2<-ggplot(p_unlist[which(p_unlist$PKNOX1<=1),], aes(x=PKNOX1, fill=group2,y=ct))+geom_boxplot(alpha=0.85)+theme_classic()+ylab("cell type")+xlab("Proportion of TFs co-binding")+theme(axis.text.y=element_blank())+scale_fill_manual(limits=c("CB","DLPFC","FP","OL","DLPFC_OLIG","FP_OLIG","OL_OLIG","DLPFC_NEUN","FP_NEUN","OL_NEUN"), values=c("darkgoldenrod2","gold2","gold1","goldenrod1","green3","darkgreen","forestgreen","cornflowerblue","dodgerblue","darkblue"), name="")
+plot_grid(plotlist=list(p1,p2), ncol=1, rel_heights=c(3,2), rel_widths=c(10,7))
+dev.off()
+
+
+
+```
+
+
+# Supp Figure 3
+
+
+
+## Fig S3A: Heatmap
+```{r, eval=F}
+#unlist and union files for each brain region and cell type
+unlist_files<-as.list(readLines("BrainTF/unlist_files.csv"))
+m=sapply(strsplit(unlist(unlist_files),"[/]"),"[[",7)
+m2=sapply(strsplit(m,"[.]"),"[[",1)
+unlist_list=lapply(unlist_files,function(x){
+  tmp<-readRDS(x)
+})
+names(unlist_list)<-m2
+unlist_list<-unlist_list[sort(names(unlist_list))]
+
+union_files<-as.list(readLines("BrainTF/union_files.csv"))
+m=sapply(strsplit(unlist(union_files),"[/]"),"[[",7)
+m2=sapply(strsplit(m,"_2000", fixed=T),"[[",1)
+union_list=lapply(union_files,function(x){
+  tmp<-readRDS(x)
+})
+names(union_list)<-m2
+
+
+
+all_skew_vals<-c()
+for (i in 1:length(union_list)){ #for each brain region/cell type
+  W<-split(unlist_list[[i]], ~name)
+  W <- W[!grepl("H3K",names(W))] #remove histones for this analysis
+  W2 <- GRangesList(W) # convert list to Grangelist for findOverlaps
+  names(W2)<-NULL
+  skew_list <-lapply(W,function(x){
+    ol <- findOverlaps(x, union_list[[i]])
+    out_vals <- unlist(mcols(union_list[[i]])$count[subjectHits(ol)])
+    return(out_vals)
+  })
+m<-names(unlist_list)[[i]]
+m<-gsub("unlist_","", m)
+skew_vals<- sapply(skew_list, skewness) #unchanged to make the final dataframe
+names(skew_vals)<-paste0(names(skew_vals), "_", m)
+all_skew_vals <- c(all_skew_vals,skew_vals)
+}
+
+
+all_skew_vals<-as.data.frame(all_skew_vals)
+all_skew_vals$TF<-sapply(strsplit(rownames(all_skew_vals),"_"), `[`,1)
+all_skew_vals$region<-sapply(strsplit(rownames(all_skew_vals),"_"), `[`,2)
+all_skew_vals$sort<-sapply(strsplit(rownames(all_skew_vals),"_"), `[`,3)
+all_skew_vals$sort<-ifelse(is.na(all_skew_vals$sort)==T, "BULK", all_skew_vals$sort)
+all_skew_vals$both<-paste0(all_skew_vals$region,"_", all_skew_vals$sort)
+
+
+reformat<-dcast(data = all_skew_vals,formula = TF~both,fun.aggregate = sum,value.var = "all_skew_vals")
+rownames(reformat)<-reformat$TF
+reformat<-as.matrix(reformat[,-1])
+reformat<-ifelse(reformat==0,100, reformat)
+
+region<-sapply(strsplit(colnames(reformat),"_"),`[`,1)
+ct<-sapply(strsplit(colnames(reformat),"_"),`[`,2)
+ha<-HeatmapAnnotation(Region=region, CellType=ct, col=list(Region=c("CB"="forestgreen","DLPFC"="plum3","FP"="goldenrod", "OL"="darkslategray2"), CellType=c("BULK"="yellow","NEUN"="cornflowerblue","NEG"="red","OLIG"="green") ))
+
+pdf("Skewness_Heatmap.pdf", width=7, height=12)
+Heatmap(reformat, name="skewness", col=colorRamp2(c(-1.5,0,1.5, 3.5,3.6), c("red","white","blue" ,"blue" , "slategray"  )), row_names_gp=gpar(fontsize=6), top_annotation=ha,  heatmap_legend_param = list(
+        title = "HOT-ness", at = c(-1.5, 0, 1.5), 
+        labels = c("More HOT", "", "Less HOT"), col_fun=colorRamp2(c(-1.5,0,1.5),c("red","white","blue"))
+    ))
+dev.off()
+
+
+
+```
+
+
+## Fig S3C: NFIC
+```{r, eval=F}
+
+TF="NFIC"
+props<-list()
+for (i in 1:length(union_list)){
+  if( grepl("NEG", names(union_list)[i]) ==F){
+    W<-split(unlist_list[[i]], ~name)
+    n<-length(unique(unlist_list[[i]]$name))
+    W <- W[grepl(TF,names(W))]
+    W <- W[[1]]
+    counts<-as.numeric(subsetByOverlaps(union_list[[i]], W)$count)
+    props[[i]]<-counts/n
+  }
+}
+
+names(props)<-names(union_list)
+props<-props[-c(3,7,11)]
+
+p_unlist<-as.data.frame(unlist(props))
+p_unlist$group<-rownames(p_unlist)
+p_unlist$group<-gsub('[[:digit:]]+', '', p_unlist$group)
+p_unlist$group2<-gsub("union_","", p_unlist$group)
+colnames(p_unlist)[1]<-"NFIC"
+p_unlist$ct<-sapply(strsplit(p_unlist$group2,"_", fixed=T),`[`,2)
+p_unlist$ct<-ifelse(is.na(p_unlist$ct)==T, "BULK", p_unlist$ct)
+p_unlist$ct<-factor(p_unlist$ct, levels=rev(c("BULK","OLIG","NEUN")))
+
+pdf("NFIC_skewness_density_plot.pdf", width=6, height=7)
+p1<-ggplot(p_unlist[which(p_unlist$NFIC<=1),], aes(x=NFIC,fill=ct, color=ct))+geom_density(alpha=0.65)+theme_classic()+xlab("")+scale_fill_manual(limits=c("BULK","OLIG","NEUN"), values=c("darkgoldenrod2","darkgreen","dodgerblue3"), name="Cell type")+scale_color_manual(limits=c("BULK","OLIG","NEUN"), values=c("darkgoldenrod2","darkgreen","dodgerblue3"), name="Cell type",guide="none")
+
+
+p2<-ggplot(p_unlist[which(p_unlist$NFIC<=1),], aes(x=NFIC, fill=group2,y=ct))+geom_boxplot(alpha=0.85)+theme_classic()+ylab("cell type")+xlab("Proportion of TFs co-binding")+theme(axis.text.y=element_blank())+scale_fill_manual(limits=c("CB","DLPFC","FP","OL","DLPFC_OLIG","FP_OLIG","OL_OLIG","DLPFC_NEUN","FP_NEUN","OL_NEUN"), values=c("darkgoldenrod2","gold2","gold1","goldenrod1","green3","darkgreen","forestgreen","cornflowerblue","dodgerblue","darkblue"), name="")
+plot_grid(plotlist=list(p1,p2), ncol=1, rel_heights=c(3,2), rel_widths=c(10,7))
+dev.off()
+
+
+
+```
+
+
+## Fig S3C:  scatter
+```{r, eval=F}
+#tab_skew is from Fig 3E section
+
+pdf("SkewVal_vs_length.pdf", width=5, height=5)
+ggplot(tab_skew, aes(x=skew_vals_inv,y=length))+geom_point()+ylab("Num. Peaks")+xlab("HOT skew")+theme_classic()+geom_text_repel(aes(label=TF), size=2)+geom_smooth(method = "glm", se = F, method.args = list(family = "quasipoisson"))
+dev.off()
+```
+
+
+# Figure 4: Motif recognition by transcription factors.
+## Fig 4A: proportion vs centrality
+
+**Centrality:**
+
+```{r, eval=F}
+unlist_DLPFC   <-readRDS("unlist_DLPFC.rds")
+unlist_DLPFC$name<-ifelse(unlist_DLPFC$name=="SIP1","ZEB2",
+                          ifelse(unlist_DLPFC$name=="SREBP2","SREBF2",
+                                 ifelse(unlist_DLPFC$name=="NRSF","REST",
+                                        ifelse(unlist_DLPFC$name=="NEUROD","NEUROD1",unlist_DLPFC$name))))
+union_DLPFC<-readRDS("union_final_DLPFC.rds")
+names(unlist_DLPFC)<-NULL
+union_DLPFC$TF<-gsub("NRSF","REST", union_DLPFC$TF)
+union_DLPFC$TF<-gsub("SREBP2","SREBF2", union_DLPFC$TF)
+union_DLPFC$TF<-gsub("NEUROD","NEUROD1",union_DLPFC$TF)
+
+unlist_DLPFC_recenter<-as.data.frame(unlist_DLPFC)
+unlist_DLPFC_recenter$end<-unlist_DLPFC_recenter$start+unlist_DLPFC_recenter$peak+250
+unlist_DLPFC_recenter$center<-unlist_DLPFC_recenter$start+unlist_DLPFC_recenter$peak
+unlist_DLPFC_recenter$start<-unlist_DLPFC_recenter$start+unlist_DLPFC_recenter$peak-250
+unlist_DLPFC_recenter<-unlist_DLPFC_recenter[,-4]
+unlist_DLPFC_recenter<-GRanges(unlist_DLPFC_recenter)
+
+
+#filter motifs to call only those that were chiped
+pfm2_dups<-readRDS( "BrainTF/Filtered_PFM.rds")
+motif_pos<-matchMotifs(pfm2_dups,unlist_DLPFC_recenter,out="positions", genome = BSgenome.Hsapiens.UCSC.hg38)
+
+#unlist motifs and name them
+motif_unlist<-unlist(motif_pos)
+motif_unlist$motif<-names(motif_unlist)
+
+
+unlist_DLPFC_recenter<-unlist_DLPFC_recenter[which(unlist_DLPFC_recenter$name %in% motif_unlist$motif),]
+TFs<-unique(unlist_DLPFC_recenter$name)
+TFs<-TFs[TFs %in% motif_unlist$motif]
+
+
+
+dist_mat<-matrix(ncol=length(TFs),nrow=length(TFs))
+dist_var<-matrix(ncol=length(TFs),nrow=length(TFs))
+for(i in 1:length(TFs)){     #i loops through TFs
+  for(j in 1:length(TFs)){   #j loops through motifs
+    B<-unique(motif_unlist[which(motif_unlist$motif==TFs[j])])
+    over<-findOverlaps(unlist_DLPFC_recenter[which(unlist_DLPFC_recenter$name ==TFs[i])], B) 
+    tmp<-unlist_DLPFC_recenter[which(unlist_DLPFC_recenter$name ==TFs[i])][queryHits(over)]
+    tmp$motif_pos<-start(B[subjectHits(over)])
+    tmp$dist<-tmp$motif_pos-tmp$center
+    dist_mat[i,j]<-median(tmp$dist)   #row is TF, column is motif
+    dist_var[i,j]<-var(tmp$dist)
+  }
+}
+rownames(dist_mat)<-TFs
+colnames(dist_mat)<-TFs
+
+rownames(dist_var)<-TFs
+colnames(dist_var)<-TFs
+tmp2<-as.data.frame(dist_var)
+
+dist_var.s<-apply(dist_var, 2, scale)
+rownames(dist_var.s)<-rownames(dist_var)
+dist_var.s<-dist_var.s[sort(rownames(dist_var.s)), sort(colnames(dist_var.s))]
+diag<-diag(dist_var.s)
+names(diag)<-colnames(dist_var.s)
+diag<-sort(diag)
+dist_var.s<-dist_var.s[names(diag),names(diag)]
+
+
+
+
+
+tmp2$TF<-rownames(tmp2)
+tmp2.m<-melt(tmp2)
+colnames(tmp2.m)[2:3]<-c("Motif","centrality")
+
+```
+
+**Proportion:**
+
+```{r, eval=F}
+
+
+motif_pos<-matchMotifs(pfm2_dups,union_DLPFC, genome = BSgenome.Hsapiens.UCSC.hg38)
+mm_ChIP_DLPFC<-motifMatches(motif_pos)
+
+TFs<-unique(unlist_DLPFC$name)
+TFs<-TFs[TFs %in% colnames(mm_ChIP_DLPFC)]
+over<-findOverlaps(union_DLPFC, unlist_DLPFC[which(unlist_DLPFC$name %in% TFs),])
+tmp<-mm_ChIP_DLPFC[unique(queryHits(over)),]
+NOT<-union_DLPFC[unique(queryHits(over)),]
+
+prop<-c()
+FE<-c()
+for( i in 1:length(TFs)){
+  over<-findOverlaps(union_DLPFC, unlist_DLPFC[which(unlist_DLPFC$name== TFs[i]),])
+  tmp<-mm_ChIP_DLPFC[unique(queryHits(over)),]
+  IN<-colSums(tmp)/nrow(tmp)
+  OUT<-colSums(mm_ChIP_DLPFC)/length(union_DLPFC)
+  FE<-rbind(FE, IN/OUT)
+  prop<-rbind(prop, IN)
+}
+
+
+rownames(prop)<-TFs
+colnames(prop)<-colnames(mm_ChIP_DLPFC)
+tmp<-as.data.frame(prop)
+prop<-prop[order(rownames(prop)), order(colnames(prop))]
+diag<-diag(prop)
+names(diag)<-colnames(prop)
+diag_keep<-diag
+diag<-sort(-diag)
+prop<-prop[names(diag),names(diag)]
+
+
+
+scaled<-apply( prop,2,scale)
+rownames(scaled)<-rownames(prop)
+diag<-diag(scaled)
+names(diag)<-colnames(scaled)
+diag<-sort(-diag)
+scaled<-scaled[names(diag),names(diag)]
+
+
+tmp$TF<-rownames(tmp)
+tmp.m<-melt(tmp)
+colnames(tmp.m)[2:3]<-c("Motif","proportion")
+tmp.m$TF<-ifelse(tmp.m$TF=="SIP1","ZEB2",
+                          ifelse(tmp.m$TF=="SREBP2","SREBF2",
+                                 ifelse(tmp.m$TF=="NRSF","REST",
+                                        ifelse(tmp.m$TF=="NEUROD","NEUROD1",tmp.m$TF))))
+tmp.m<-merge(tmp.m, tmp2.m, by=c("TF","Motif"))
+write.csv(tmp.m, "~/myers/BrainTF/Motif_proportion.csv")
+
+```
+
+**Combine:**
+
+```{r, eval=F}
+centrality<-as.data.frame(diag(dist_var.s))
+proportion<-as.data.frame(diag(scaled))
+centrality$TF<-rownames(centrality)
+proportion$TF<-rownames(proportion)
+colnames(centrality)[1]<-"Centrality"
+colnames(proportion)[1]<-"Proportion"
+merge<-merge(centrality, proportion,by="TF")
+merge<-merge(merge, annots, by.x="TF", by.y="Target")
+merge$motif<-ifelse(merge$motif=="no","no","yes")
+
+pdf("BrainTF_Motif_proportion_by_centrality_Z_colorMEME.pdf", width=6, height=6)
+ggplot(merge, aes(x=Proportion,y= -1*Centrality,color=motif))+geom_point( size=2)+theme_bw()+xlab("Motif Proportion Z")+ylab("Motif Centrality Z")+geom_text_repel(aes(label=TF), point.padding=5e-04, box.padding=0.5, max.overlaps=6)+scale_color_manual(values=c("grey64","darkorchid3"))
+dev.off()
+
+```
+
+
+
+### Supp Fig 4A
+
+*Included here because code chunks use files generated in previous sections*
+```{r, eval=F}
+df<-as.data.frame(diag_keep) #diagonal was the corresponding motif for a DAP
+df$TF<-rownames(df)
+df$none<-1-df$diag_keep
+df.m<-melt(df)
+df.m$variable<-factor(df.m$variable, levels=c("none","diag_keep"))
+df.m$y<-"y"
+pdf("Motif_proportion_barplots.pdf", width=12, height=7)
+ggplot(df.m, aes(y=y,x=value,fill=variable))+geom_bar(stat="identity", color="grey20")+facet_wrap(~TF)+scale_fill_manual(values=c("darkseagreen1","darkseagreen4"))+theme_classic()+theme(axis.text.y=element_text(size=0), axis.ticks.y=element_blank())
+dev.off()
+
+```
+
+
+### Supp Fig 4F
+
+*Included here because code chunks use files generated in previous sections*
+```{r, eval=F}
+
+
+
+pdf("motif_centrality_heatmap_variance.pdf", width=10, height=10)
+Heatmap(dist_var.s, name="Z var(centrality)", cluster_rows=F, cluster_columns=F, column_title="Motifs", row_title="TFs", col=colorRamp2(c(-2,-0.5,0.5), rev(magma(3))))
+dev.off()
+
+```
+
+### Supp Fig 4E
+
+*Included here because code chunks use files generated in previous sections*
+```{r, eval=F}
+
+annots<-read.table("BrainTF/Motif_center.txt", header=T) #MEME annotation
+annots$Target<-ifelse(annots$Target=="SIP1","ZEB2",
+                          ifelse(annots$Target=="SREBP2","SREBF2",
+                                 ifelse(annots$Target=="NRSF","REST",
+                                        ifelse(annots$Target=="NEUROD","NEUROD1",annots$Target))))
+rownames(annots)<-annots$Target
+annots<-annots[rownames(scaled),]
+rs<-rowAnnotation(Motif_call=annots$motif,col=list(Motif_call=c("no"="red","yes"="blue","yes_center"="blue", "sparse_yes"="skyblue2")))
+
+
+pdf("Motif_log2FE_ColumnZ.pdf", width=9, height=8)
+Heatmap(scaled, col=colorRamp2(c(-2,1,2), viridis(3)), cluster_rows=F, cluster_columns=F, name="Z", right_annotation=rs,column_title="Motifs", row_title="TFs",)
+dev.off()
+
+```
+
+### Supp Fig 4C
+```{r, eval=F}
+dist<-list()
+for(i in 1:length(TFs)){
+  B<-unique(motif_unlist[which(motif_unlist$motif==TFs[i])])
+  over<-findOverlaps(unlist_DLPFC_recenter[which(unlist_DLPFC_recenter$name ==TFs[i])], B) 
+  tmp<-unlist_DLPFC_recenter[which(unlist_DLPFC_recenter$name ==TFs[i])][queryHits(over)]
+  tmp$motif_pos<-start(B[subjectHits(over)])
+  dist[[i]]<-tmp$motif_pos-tmp$center
+}
+
+names(dist)<-TFs
+
+dist_unlist<-as.data.frame(unlist(dist))
+tf<-c()
+for (i in 1: length(dist)){
+  tf<-c(tf, rep(names(dist)[i], length(dist[[i]])))
+}
+dist_unlist$TF<-tf
+colnames(dist_unlist)[1]<-"Distance"
+
+pdf("Centrality_distributions.pdf", width=18, height=18)
+ggplot(dist_unlist, aes(x=Distance))+geom_density()+theme_classic()+facet_wrap(~TF, scales="free")
+dev.off()
+
+```
+
+### Supp Fig 4G:
+
+**Note: this is a very long code block**
+* for each tissue/cell type ATAC peaks and unlisted ChIP peaks were read in
+* motifs were called in ATAC and ChIP peaks
+* enrichment for the corresponding motif was calculated for all DAPs with a motif
+
+```{r, eval=F}
+pfm<-readJASPARMatrix("JASPAR2022_CORE_vertebrates_non-redundant_pfms_jaspar.pfm", matrixClass="PFM")
+
+
+#OL
+
+extraCols_narrowPeak <- c(signalValue = "numeric", pValue = "numeric",qValue = "numeric", peak = "integer")
+ATAC_NEUN<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_OL_NeuN_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+ATAC_NEG<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_OL_NegNeg_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+ATAC_OLIG<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_OL_Olig2_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+
+ATAC<-reduce(c(ATAC_NEUN,ATAC_NEG,ATAC_OLIG))
+ATAC<-resize(ATAC, width=500, fix="center")
+
+
+motif_pos<-matchMotifs(pfm,ATAC, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ATAC_OL<-motifMatches(motif_pos)
+OL_ATAC_motif_props<-colSums(mm_ATAC_OL)/length(ATAC)
+
+
+unlist_OL   <-readRDS("unlist_OL.rds")
+unlist_OL<-resize(unlist_OL, width=500, fix="center")
+motif_OL<-matchMotifs(pfm,unlist_OL, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_OL<-motifMatches(motif_OL)
+TFs<-unique(unlist_OL$name)
+
+prop<-c()
+FE_bulk_OL<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_OL[which(unlist_OL$name==TFs[i] ),])/length(unlist_OL[which(unlist_OL$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_bulk_OL<-cbind(FE_bulk_OL,p/OL_ATAC_motif_props)
+}
+colnames(FE_bulk_OL)<-TFs
+
+## NEUN
+unlist_OL_NEUN<-readRDS("unlist_OL_NEUN.rds")
+
+ATAC$NEUN<-F
+over<-findOverlaps(ATAC,ATAC_NEUN)
+ATAC[queryHits(over)]$NEUN<-T
+
+NEUN_OL_ATAC_motif_props<-colSums(mm_ATAC_OL[which(ATAC$NEUN==T),])/length(ATAC[which(ATAC$NEUN==T),])
+
+unlist_OL_NEUN<-resize(unlist_OL_NEUN, width=500, fix="center")
+motif_OL_NEUN<-matchMotifs(pfm,unlist_OL_NEUN, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_OL_NEUN<-motifMatches(motif_OL_NEUN)
+TFs<-unique(unlist_OL_NEUN$name)
+
+prop<-c()
+FE_NEUN_OL<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_OL_NEUN[which(unlist_OL_NEUN$name==TFs[i] ),])/length(unlist_OL_NEUN[which(unlist_OL_NEUN$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_NEUN_OL<-cbind(FE_NEUN_OL,p/NEUN_OL_ATAC_motif_props)
+}
+colnames(FE_NEUN_OL)<-TFs
+
+
+## NEG
+unlist_OL_NEG<-readRDS("unlist_OL_NEG.rds")
+
+ATAC$NEG<-F
+over<-findOverlaps(ATAC,ATAC_NEG)
+ATAC[queryHits(over)]$NEG<-T
+
+NEG_OL_ATAC_motif_props<-colSums(mm_ATAC_OL[which(ATAC$NEG==T),])/length(ATAC[which(ATAC$NEG==T),])
+
+unlist_OL_NEG<-resize(unlist_OL_NEG, width=500, fix="center")
+motif_OL_NEG<-matchMotifs(pfm,unlist_OL_NEG, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_OL_NEG<-motifMatches(motif_OL_NEG)
+TFs<-unique(unlist_OL_NEG$name)
+
+prop<-c()
+FE_NEG_OL<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_OL_NEG[which(unlist_OL_NEG$name==TFs[i] ),])/length(unlist_OL_NEG[which(unlist_OL_NEG$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_NEG_OL<-cbind(FE_NEG_OL,p/NEG_OL_ATAC_motif_props)
+}
+
+colnames(FE_NEG_OL)<-TFs
+
+
+
+## OLIG
+unlist_OL_OLIG<-readRDS("unlist_OL_OLIG.rds")
+
+ATAC$OLIG<-F
+over<-findOverlaps(ATAC,ATAC_OLIG)
+ATAC[queryHits(over)]$OLIG<-T
+
+OLIG_OL_ATAC_motif_props<-colSums(mm_ATAC_OL[which(ATAC$OLIG==T),])/length(ATAC[which(ATAC$OLIG==T),])
+
+unlist_OL_OLIG<-resize(unlist_OL_OLIG, width=500, fix="center")
+motif_OL_OLIG<-matchMotifs(pfm,unlist_OL_OLIG, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_OL_OLIG<-motifMatches(motif_OL_OLIG)
+TFs<-unique(unlist_OL_OLIG$name)
+
+prop<-c()
+FE_OLIG_OL<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_OL_OLIG[which(unlist_OL_OLIG$name==TFs[i] ),])/length(unlist_OL_OLIG[which(unlist_OL_OLIG$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_OLIG_OL<-cbind(FE_OLIG_OL,p/OLIG_OL_ATAC_motif_props)
+}
+colnames(FE_OLIG_OL)<-TFs
+
+FE_bulk_OL<-as.data.frame(FE_bulk_OL)
+FE_NEUN_OL<-as.data.frame(FE_NEUN_OL)
+FE_NEG_OL<-as.data.frame(FE_NEG_OL)
+FE_OLIG_OL<-as.data.frame(FE_OLIG_OL)
+
+FE_bulk_OL$motif<-toupper(rownames(FE_bulk_OL))
+FE_bulk_OL.m<-melt(FE_bulk_OL)
+FE_bulk_OL.s<-FE_bulk_OL.m[which(FE_bulk_OL.m$motif==FE_bulk_OL.m$variable),]
+FE_bulk_OL.s<-FE_bulk_OL.s[order(-FE_bulk_OL.s$value),]
+FE_bulk_OL.s<-FE_bulk_OL.s[!duplicated(FE_bulk_OL.s$variable),]
+FE_bulk_OL.s$variable<-factor(FE_bulk_OL.s$variable, levels=unique(FE_bulk_OL.s$variable))
+
+FE_NEUN_OL$motif<-toupper(rownames(FE_NEUN_OL))
+FE_NEUN_OL.m<-melt(FE_NEUN_OL)
+FE_NEUN_OL.s<-FE_NEUN_OL.m[which(FE_NEUN_OL.m$motif==FE_NEUN_OL.m$variable),]
+FE_NEUN_OL.s<-FE_NEUN_OL.s[order(-FE_NEUN_OL.s$value),]
+FE_NEUN_OL.s<-FE_NEUN_OL.s[!duplicated(FE_NEUN_OL.s$variable),]
+FE_NEUN_OL.s$variable<-factor(FE_NEUN_OL.s$variable, levels=unique(FE_NEUN_OL.s$variable))
+
+FE_NEG_OL$motif<-toupper(rownames(FE_NEG_OL))
+FE_NEG_OL.m<-melt(FE_NEG_OL)
+FE_NEG_OL.s<-FE_NEG_OL.m[which(FE_NEG_OL.m$motif==FE_NEG_OL.m$variable),]
+FE_NEG_OL.s<-FE_NEG_OL.s[order(-FE_NEG_OL.s$value),]
+FE_NEG_OL.s<-FE_NEG_OL.s[!duplicated(FE_NEG_OL.s$variable),]
+FE_NEG_OL.s$variable<-factor(FE_NEG_OL.s$variable, levels=unique(FE_NEG_OL.s$variable))
+
+FE_OLIG_OL$motif<-toupper(rownames(FE_OLIG_OL))
+FE_OLIG_OL.m<-melt(FE_OLIG_OL)
+FE_OLIG_OL.s<-FE_OLIG_OL.m[which(FE_OLIG_OL.m$motif==FE_OLIG_OL.m$variable),]
+FE_OLIG_OL.s<-FE_OLIG_OL.s[order(-FE_OLIG_OL.s$value),]
+FE_OLIG_OL.s<-FE_OLIG_OL.s[!duplicated(FE_OLIG_OL.s$variable),]
+FE_OLIG_OL.s$variable<-factor(FE_OLIG_OL.s$variable, levels=unique(FE_OLIG_OL.s$variable))
+
+colnames(FE_bulk_OL.s)[3]<-"OL_bulk"
+colnames(FE_NEUN_OL.s)[3]<-"OL_NEUN"
+colnames(FE_NEG_OL.s )[3]<-"OL_NEG"
+colnames(FE_OLIG_OL.s)[3]<-"OL_OLIG"
+OL.1<-merge(FE_bulk_OL.s,FE_NEUN_OL.s, by="variable", all=T)
+OL.2<-merge(OL.1, FE_NEG_OL.s, by="variable", all=T)
+OL.3<-merge(OL.2, FE_OLIG_OL.s, by="variable", all=T)
+OL.3<-OL.3[,c(1,3,5,7,9)]
+
+
+
+
+#DLPFC
+
+extraCols_narrowPeak <- c(signalValue = "numeric", pValue = "numeric",qValue = "numeric", peak = "integer")
+ATAC_NEUN<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_NeuN_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+ATAC_NEG<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_NegNeg_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+ATAC_OLIG<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_Olig2_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+
+ATAC<-reduce(c(ATAC_NEUN,ATAC_NEG,ATAC_OLIG))
+ATAC<-resize(ATAC, width=500, fix="center")
+
+
+motif_pos<-matchMotifs(pfm,ATAC, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ATAC_DLPFC<-motifMatches(motif_pos)
+DLPFC_ATAC_motif_props<-colSums(mm_ATAC_DLPFC)/length(ATAC)
+
+
+unlist_DLPFC   <-readRDS("unlist_DLPFC.rds")
+unlist_DLPFC<-resize(unlist_DLPFC, width=500, fix="center")
+motif_DLPFC<-matchMotifs(pfm,unlist_DLPFC, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_DLPFC<-motifMatches(motif_DLPFC)
+TFs<-unique(unlist_DLPFC$name)
+
+prop<-c()
+FE_bulk_DLPFC<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_DLPFC[which(unlist_DLPFC$name==TFs[i] ),])/length(unlist_DLPFC[which(unlist_DLPFC$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_bulk_DLPFC<-cbind(FE_bulk_DLPFC,p/DLPFC_ATAC_motif_props)
+}
+colnames(FE_bulk_DLPFC)<-TFs
+
+## NEUN
+unlist_DLPFC_NEUN<-readRDS("unlist_DLPFC_NEUN.rds")
+
+ATAC$NEUN<-F
+over<-findOverlaps(ATAC,ATAC_NEUN)
+ATAC[queryHits(over)]$NEUN<-T
+
+NEUN_DLPFC_ATAC_motif_props<-colSums(mm_ATAC_DLPFC[which(ATAC$NEUN==T),])/length(ATAC[which(ATAC$NEUN==T),])
+
+unlist_DLPFC_NEUN<-resize(unlist_DLPFC_NEUN, width=500, fix="center")
+motif_DLPFC_NEUN<-matchMotifs(pfm,unlist_DLPFC_NEUN, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_DLPFC_NEUN<-motifMatches(motif_DLPFC_NEUN)
+TFs<-unique(unlist_DLPFC_NEUN$name)
+
+prop<-c()
+FE_NEUN_DLPFC<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_DLPFC_NEUN[which(unlist_DLPFC_NEUN$name==TFs[i] ),])/length(unlist_DLPFC_NEUN[which(unlist_DLPFC_NEUN$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_NEUN_DLPFC<-cbind(FE_NEUN_DLPFC,p/NEUN_DLPFC_ATAC_motif_props)
+}
+colnames(FE_NEUN_DLPFC)<-TFs
+
+## NEG
+unlist_DLPFC_NEG<-readRDS("unlist_DLPFC_NEG.rds")
+
+ATAC$NEG<-F
+over<-findOverlaps(ATAC,ATAC_NEG)
+ATAC[queryHits(over)]$NEG<-T
+
+NEG_DLPFC_ATAC_motif_props<-colSums(mm_ATAC_DLPFC[which(ATAC$NEG==T),])/length(ATAC[which(ATAC$NEG==T),])
+
+unlist_DLPFC_NEG<-resize(unlist_DLPFC_NEG, width=500, fix="center")
+motif_DLPFC_NEG<-matchMotifs(pfm,unlist_DLPFC_NEG, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_DLPFC_NEG<-motifMatches(motif_DLPFC_NEG)
+TFs<-unique(unlist_DLPFC_NEG$name)
+
+prop<-c()
+FE_NEG_DLPFC<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_DLPFC_NEG[which(unlist_DLPFC_NEG$name==TFs[i] ),])/length(unlist_DLPFC_NEG[which(unlist_DLPFC_NEG$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_NEG_DLPFC<-cbind(FE_NEG_DLPFC,p/NEG_DLPFC_ATAC_motif_props)
+}
+
+colnames(FE_NEG_DLPFC)<-TFs
+
+
+## OLIG
+unlist_DLPFC_OLIG<-readRDS("unlist_DLPFC_OLIG.rds")
+
+ATAC$OLIG<-F
+over<-findOverlaps(ATAC,ATAC_OLIG)
+ATAC[queryHits(over)]$OLIG<-T
+
+OLIG_DLPFC_ATAC_motif_props<-colSums(mm_ATAC_DLPFC[which(ATAC$OLIG==T),])/length(ATAC[which(ATAC$OLIG==T),])
+
+unlist_DLPFC_OLIG<-resize(unlist_DLPFC_OLIG, width=500, fix="center")
+motif_DLPFC_OLIG<-matchMotifs(pfm,unlist_DLPFC_OLIG, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_DLPFC_OLIG<-motifMatches(motif_DLPFC_OLIG)
+TFs<-unique(unlist_DLPFC_OLIG$name)
+
+prop<-c()
+FE_OLIG_DLPFC<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_DLPFC_OLIG[which(unlist_DLPFC_OLIG$name==TFs[i] ),])/length(unlist_DLPFC_OLIG[which(unlist_DLPFC_OLIG$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_OLIG_DLPFC<-cbind(FE_OLIG_DLPFC,p/OLIG_DLPFC_ATAC_motif_props)
+}
+
+colnames(FE_OLIG_DLPFC)<-TFs
+
+
+
+FE_bulk_DLPFC<-as.data.frame(FE_bulk_DLPFC)
+FE_NEUN_DLPFC<-as.data.frame(FE_NEUN_DLPFC)
+FE_NEG_DLPFC<-as.data.frame(FE_NEG_DLPFC)
+FE_OLIG_DLPFC<-as.data.frame(FE_OLIG_DLPFC)
+
+FE_bulk_DLPFC$motif<-toupper(rownames(FE_bulk_DLPFC))
+FE_bulk_DLPFC.m<-melt(FE_bulk_DLPFC)
+FE_bulk_DLPFC.s<-FE_bulk_DLPFC.m[which(FE_bulk_DLPFC.m$motif==FE_bulk_DLPFC.m$variable),]
+FE_bulk_DLPFC.s<-FE_bulk_DLPFC.s[order(-FE_bulk_DLPFC.s$value),]
+FE_bulk_DLPFC.s<-FE_bulk_DLPFC.s[!duplicated(FE_bulk_DLPFC.s$variable),]
+FE_bulk_DLPFC.s$variable<-factor(FE_bulk_DLPFC.s$variable, levels=unique(FE_bulk_DLPFC.s$variable))
+
+FE_NEUN_DLPFC$motif<-toupper(rownames(FE_NEUN_DLPFC))
+FE_NEUN_DLPFC.m<-melt(FE_NEUN_DLPFC)
+FE_NEUN_DLPFC.s<-FE_NEUN_DLPFC.m[which(FE_NEUN_DLPFC.m$motif==FE_NEUN_DLPFC.m$variable),]
+FE_NEUN_DLPFC.s<-FE_NEUN_DLPFC.s[order(-FE_NEUN_DLPFC.s$value),]
+FE_NEUN_DLPFC.s<-FE_NEUN_DLPFC.s[!duplicated(FE_NEUN_DLPFC.s$variable),]
+FE_NEUN_DLPFC.s$variable<-factor(FE_NEUN_DLPFC.s$variable, levels=unique(FE_NEUN_DLPFC.s$variable))
+
+FE_NEG_DLPFC$motif<-toupper(rownames(FE_NEG_DLPFC))
+FE_NEG_DLPFC.m<-melt(FE_NEG_DLPFC)
+FE_NEG_DLPFC.s<-FE_NEG_DLPFC.m[which(FE_NEG_DLPFC.m$motif==FE_NEG_DLPFC.m$variable),]
+FE_NEG_DLPFC.s<-FE_NEG_DLPFC.s[order(-FE_NEG_DLPFC.s$value),]
+FE_NEG_DLPFC.s<-FE_NEG_DLPFC.s[!duplicated(FE_NEG_DLPFC.s$variable),]
+FE_NEG_DLPFC.s$variable<-factor(FE_NEG_DLPFC.s$variable, levels=unique(FE_NEG_DLPFC.s$variable))
+
+FE_OLIG_DLPFC$motif<-toupper(rownames(FE_OLIG_DLPFC))
+FE_OLIG_DLPFC.m<-melt(FE_OLIG_DLPFC)
+FE_OLIG_DLPFC.s<-FE_OLIG_DLPFC.m[which(FE_OLIG_DLPFC.m$motif==FE_OLIG_DLPFC.m$variable),]
+FE_OLIG_DLPFC.s<-FE_OLIG_DLPFC.s[order(-FE_OLIG_DLPFC.s$value),]
+FE_OLIG_DLPFC.s<-FE_OLIG_DLPFC.s[!duplicated(FE_OLIG_DLPFC.s$variable),]
+FE_OLIG_DLPFC.s$variable<-factor(FE_OLIG_DLPFC.s$variable, levels=unique(FE_OLIG_DLPFC.s$variable))
+
+colnames(FE_bulk_DLPFC.s)[3]<-"DLPFC_bulk"
+colnames(FE_NEUN_DLPFC.s)[3]<-"DLPFC_NEUN"
+colnames(FE_NEG_DLPFC.s )[3]<-"DLPFC_NEG"
+colnames(FE_OLIG_DLPFC.s)[3]<-"DLPFC_OLIG"
+DLPFC.1<-merge(FE_bulk_DLPFC.s,FE_NEUN_DLPFC.s, by="variable", all=T)
+DLPFC.2<-merge(DLPFC.1, FE_NEG_DLPFC.s, by="variable", all=T)
+DLPFC.3<-merge(DLPFC.2, FE_OLIG_DLPFC.s, by="variable", all=T)
+DLPFC.3<-DLPFC.3[,c(1,3,5,7,9)]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#FP
+
+extraCols_narrowPeak <- c(signalValue = "numeric", pValue = "numeric",qValue = "numeric", peak = "integer")
+ATAC_NEUN<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_FP_NeuN_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+ATAC_NEG<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_FP_NegNeg_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+ATAC_OLIG<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_FP_Olig2_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+
+ATAC<-reduce(c(ATAC_NEUN,ATAC_NEG,ATAC_OLIG))
+ATAC<-resize(ATAC, width=500, fix="center")
+
+
+motif_pos<-matchMotifs(pfm,ATAC, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ATAC_FP<-motifMatches(motif_pos)
+FP_ATAC_motif_props<-colSums(mm_ATAC_FP)/length(ATAC)
+
+
+unlist_FP   <-readRDS("unlist_FP.rds")
+unlist_FP<-resize(unlist_FP, width=500, fix="center")
+motif_FP<-matchMotifs(pfm,unlist_FP, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_FP<-motifMatches(motif_FP)
+TFs<-unique(unlist_FP$name)
+
+prop<-c()
+FE_bulk_FP<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_FP[which(unlist_FP$name==TFs[i] ),])/length(unlist_FP[which(unlist_FP$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_bulk_FP<-cbind(FE_bulk_FP,p/FP_ATAC_motif_props)
+}
+colnames(FE_bulk_FP)<-TFs
+
+## NEUN
+unlist_FP_NEUN<-readRDS("unlist_FP_NEUN.rds")
+
+ATAC$NEUN<-F
+over<-findOverlaps(ATAC,ATAC_NEUN)
+ATAC[queryHits(over)]$NEUN<-T
+
+NEUN_FP_ATAC_motif_props<-colSums(mm_ATAC_FP[which(ATAC$NEUN==T),])/length(ATAC[which(ATAC$NEUN==T),])
+
+unlist_FP_NEUN<-resize(unlist_FP_NEUN, width=500, fix="center")
+motif_FP_NEUN<-matchMotifs(pfm,unlist_FP_NEUN, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_FP_NEUN<-motifMatches(motif_FP_NEUN)
+TFs<-unique(unlist_FP_NEUN$name)
+
+prop<-c()
+FE_NEUN_FP<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_FP_NEUN[which(unlist_FP_NEUN$name==TFs[i] ),])/length(unlist_FP_NEUN[which(unlist_FP_NEUN$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_NEUN_FP<-cbind(FE_NEUN_FP,p/NEUN_FP_ATAC_motif_props)
+}
+colnames(FE_NEUN_FP)<-TFs
+
+## NEG
+unlist_FP_NEG<-readRDS("unlist_FP_NEG.rds")
+
+ATAC$NEG<-F
+over<-findOverlaps(ATAC,ATAC_NEG)
+ATAC[queryHits(over)]$NEG<-T
+
+NEG_FP_ATAC_motif_props<-colSums(mm_ATAC_FP[which(ATAC$NEG==T),])/length(ATAC[which(ATAC$NEG==T),])
+
+unlist_FP_NEG<-resize(unlist_FP_NEG, width=500, fix="center")
+motif_FP_NEG<-matchMotifs(pfm,unlist_FP_NEG, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_FP_NEG<-motifMatches(motif_FP_NEG)
+TFs<-unique(unlist_FP_NEG$name)
+
+prop<-c()
+FE_NEG_FP<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_FP_NEG[which(unlist_FP_NEG$name==TFs[i] ),])/length(unlist_FP_NEG[which(unlist_FP_NEG$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_NEG_FP<-cbind(FE_NEG_FP,p/NEG_FP_ATAC_motif_props)
+}
+
+colnames(FE_NEG_FP)<-TFs
+
+
+## OLIG
+unlist_FP_OLIG<-readRDS("unlist_FP_OLIG.rds")
+
+ATAC$OLIG<-F
+over<-findOverlaps(ATAC,ATAC_OLIG)
+ATAC[queryHits(over)]$OLIG<-T
+
+OLIG_FP_ATAC_motif_props<-colSums(mm_ATAC_FP[which(ATAC$OLIG==T),])/length(ATAC[which(ATAC$OLIG==T),])
+
+unlist_FP_OLIG<-resize(unlist_FP_OLIG, width=500, fix="center")
+motif_FP_OLIG<-matchMotifs(pfm,unlist_FP_OLIG, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_FP_OLIG<-motifMatches(motif_FP_OLIG)
+TFs<-unique(unlist_FP_OLIG$name)
+
+prop<-c()
+FE_OLIG_FP<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_FP_OLIG[which(unlist_FP_OLIG$name==TFs[i] ),])/length(unlist_FP_OLIG[which(unlist_FP_OLIG$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_OLIG_FP<-cbind(FE_OLIG_FP,p/OLIG_FP_ATAC_motif_props)
+}
+
+colnames(FE_OLIG_FP)<-TFs
+
+
+FE_bulk_FP<-as.data.frame(FE_bulk_FP)
+FE_NEUN_FP<-as.data.frame(FE_NEUN_FP)
+FE_NEG_FP<-as.data.frame(FE_NEG_FP)
+FE_OLIG_FP<-as.data.frame(FE_OLIG_FP)
+
+FE_bulk_FP$motif<-toupper(rownames(FE_bulk_FP))
+FE_bulk_FP.m<-melt(FE_bulk_FP)
+FE_bulk_FP.s<-FE_bulk_FP.m[which(FE_bulk_FP.m$motif==FE_bulk_FP.m$variable),]
+FE_bulk_FP.s<-FE_bulk_FP.s[order(-FE_bulk_FP.s$value),]
+FE_bulk_FP.s<-FE_bulk_FP.s[!duplicated(FE_bulk_FP.s$variable),]
+FE_bulk_FP.s$variable<-factor(FE_bulk_FP.s$variable, levels=unique(FE_bulk_FP.s$variable))
+
+FE_NEUN_FP$motif<-toupper(rownames(FE_NEUN_FP))
+FE_NEUN_FP.m<-melt(FE_NEUN_FP)
+FE_NEUN_FP.s<-FE_NEUN_FP.m[which(FE_NEUN_FP.m$motif==FE_NEUN_FP.m$variable),]
+FE_NEUN_FP.s<-FE_NEUN_FP.s[order(-FE_NEUN_FP.s$value),]
+FE_NEUN_FP.s<-FE_NEUN_FP.s[!duplicated(FE_NEUN_FP.s$variable),]
+FE_NEUN_FP.s$variable<-factor(FE_NEUN_FP.s$variable, levels=unique(FE_NEUN_FP.s$variable))
+
+FE_NEG_FP$motif<-toupper(rownames(FE_NEG_FP))
+FE_NEG_FP.m<-melt(FE_NEG_FP)
+FE_NEG_FP.s<-FE_NEG_FP.m[which(FE_NEG_FP.m$motif==FE_NEG_FP.m$variable),]
+FE_NEG_FP.s<-FE_NEG_FP.s[order(-FE_NEG_FP.s$value),]
+FE_NEG_FP.s<-FE_NEG_FP.s[!duplicated(FE_NEG_FP.s$variable),]
+FE_NEG_FP.s$variable<-factor(FE_NEG_FP.s$variable, levels=unique(FE_NEG_FP.s$variable))
+
+FE_OLIG_FP$motif<-toupper(rownames(FE_OLIG_FP))
+FE_OLIG_FP.m<-melt(FE_OLIG_FP)
+FE_OLIG_FP.s<-FE_OLIG_FP.m[which(FE_OLIG_FP.m$motif==FE_OLIG_FP.m$variable),]
+FE_OLIG_FP.s<-FE_OLIG_FP.s[order(-FE_OLIG_FP.s$value),]
+FE_OLIG_FP.s<-FE_OLIG_FP.s[!duplicated(FE_OLIG_FP.s$variable),]
+FE_OLIG_FP.s$variable<-factor(FE_OLIG_FP.s$variable, levels=unique(FE_OLIG_FP.s$variable))
+
+colnames(FE_bulk_FP.s)[3]<-"FP_bulk"
+colnames(FE_NEUN_FP.s)[3]<-"FP_NEUN"
+colnames(FE_NEG_FP.s )[3]<-"FP_NEG"
+colnames(FE_OLIG_FP.s)[3]<-"FP_OLIG"
+FP.1<-merge(FE_bulk_FP.s,FE_NEUN_FP.s, by="variable", all=T)
+FP.2<-merge(FP.1, FE_NEG_FP.s, by="variable", all=T)
+FP.3<-merge(FP.2, FE_OLIG_FP.s, by="variable", all=T)
+FP.3<-FP.3[,c(1,3,5,7,9)]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#CB
+
+extraCols_narrowPeak <- c(signalValue = "numeric", pValue = "numeric",qValue = "numeric", peak = "integer")
+ATAC_NEUN<-import("ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_CB_NeuN_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+ATAC_NEG<-import("ATAC/cromwell_output/peak/idr_reproducibility/CB_NegNeg_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+ATAC_OLIG<-import("ATAC/cromwell_output/peak/idr_reproducibility/CB_Olig2_idr.optimal_peak.narrowPeak.gz", extraCols=extraCols_narrowPeak, format="bed")
+
+ATAC<-reduce(c(ATAC_NEUN,ATAC_NEG,ATAC_OLIG))
+ATAC<-resize(ATAC, width=500, fix="center")
+
+
+motif_pos<-matchMotifs(pfm,ATAC, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ATAC_CB<-motifMatches(motif_pos)
+CB_ATAC_motif_props<-colSums(mm_ATAC_CB)/length(ATAC)
+
+
+unlist_CB   <-readRDS("unlist_CB.rds")
+unlist_CB<-resize(unlist_CB, width=500, fix="center")
+motif_CB<-matchMotifs(pfm,unlist_CB, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_CB<-motifMatches(motif_CB)
+TFs<-unique(unlist_CB$name)
+
+prop<-c()
+FE_bulk_CB<-c()
+for(i in 1:length(TFs)){
+  p<-colSums(mm_ChIP_CB[which(unlist_CB$name==TFs[i] ),])/length(unlist_CB[which(unlist_CB$name==TFs[i] ),])
+  prop<-cbind(prop,p)
+  FE_bulk_CB<-cbind(FE_bulk_CB,p/CB_ATAC_motif_props)
+}
+colnames(FE_bulk_CB)<-TFs
+
+FE_bulk_CB<-as.data.frame(FE_bulk_CB)
+
+FE_bulk_CB$motif<-toupper(rownames(FE_bulk_CB))
+FE_bulk_CB.m<-melt(FE_bulk_CB)
+FE_bulk_CB.s<-FE_bulk_CB.m[which(FE_bulk_CB.m$motif==FE_bulk_CB.m$variable),]
+FE_bulk_CB.s<-FE_bulk_CB.s[order(-FE_bulk_CB.s$value),]
+FE_bulk_CB.s<-FE_bulk_CB.s[!duplicated(FE_bulk_CB.s$variable),]
+FE_bulk_CB.s$variable<-factor(FE_bulk_CB.s$variable, levels=unique(FE_bulk_CB.s$variable))
+FE_bulk_CB.s<-FE_bulk_CB.s[,-1]
+colnames(FE_bulk_CB.s)[2]<-"CB_bulk"
+
+
+
+
+
+Pattern1<-grep("motif_props", names(.GlobalEnv),value=T)
+Pattern1_list<-do.call("list",mget(Pattern1))
+Pattern1<-grep("FE_", names(.GlobalEnv),value=T)
+Pattern1<-Pattern1[grep(".m", Pattern1)]
+Pattern2_list<-do.call("list",mget(Pattern1))
+Pattern1<-grep("mm_ChIP", names(.GlobalEnv),value=T)
+Pattern3_list<-do.call("list",mget(Pattern1))
+
+
+
+all_props<-c(Pattern1_list, Pattern2_list)
+saveRDS(all_props, "BrainTF/List_motif_proportions_all.rds")
+saveRDS(Pattern3_list, "BrainTF/List_motif_calls_ChIP.rds")
+
+```
+
+
+Actually plot
+
+```{r, eval=F}
+ALL_mp<-merge(OL.3, DLPFC.3, by="variable", all=T)
+ALL_mp<-merge(FP.3, ALL_mp, by="variable",all=T)
+ALL_mp<-merge(ALL_mp, FE_bulk_CB.s, by="variable",all=T)
+
+
+rownames(ALL_mp)<-ALL_mp[,1]
+ALL_mp<-ALL_mp[,-1]
+all_mp.mat<-as.matrix(ALL_mp)
+all_mp.mat[is.na(all_mp.mat)]<-100 #make NAs large so can plot as grey
+all_mp.mat<-all_mp.mat[order(all_mp.mat[,2]),]
+
+filtered<-all_mp.mat[!(rownames(all_mp.mat) %in% c("FOS","SOX9","POU3F2","BCL11B")),]
+
+region<-sapply(strsplit(colnames(all_mp.mat), "_"), `[`,1)
+ct<-sapply(strsplit(colnames(all_mp.mat), "_"), `[`,2)
+
+ha<-HeatmapAnnotation(Region=region, CellType=ct, col=list(Region=c("CB"="forestgreen","DLPFC"="plum3","FP"="goldenrod", "OL"="darkslategray2"), CellType=c("bulk"="yellow","NEUN"="cornflowerblue","NEG"="red","OLIG"="green") ))
+
+pdf("MotifEnrichment_byCellType_Region.pdf", width=6, height=10)
+Heatmap(log2(filtered +0.001), name="log2 Fold Enrichment",col=colorRamp2(c(-3.5,0,2, 3.5,3.6), c("blue","white","red" ,"red" , "slategray"  )), cluster_columns=T, cluster_rows=T,top_annotation=ha)
+#Heatmap(log2(all_mp.mat +0.001), name="log2 Fold Enrichment",col=colorRamp2(c(-1,0,2, 3.4,3.5),  c(viridis(3),"#FDE725FF" , "grey94"  )), cluster_columns=F, cluster_rows=T,top_annotation=ha)
+dev.off()
+
+```
+
+
+## Fig 4C: GC by HOT/NOT
+```{r, eval=F}
+union_DLPFC   <-readRDS("union_DLPFC_2000_max_length.rds")
+unlist_DLPFC<-resize(unlist_DLPFC, width=500, fix="center")
+
+
+motif_DLPFC<-matchMotifs(pfm2_dups,union_DLPFC, genome = BSgenome.Hsapiens.UCSC.hg38, bg="genome")
+mm_ChIP_DLPFC<-motifMatches(motif_DLPFC)
+
+#calculate GC percent from PFM
+gc<-c()
+for(i in 1:length(pfm2_dups)){
+  tmp<-pfm2_dups[[i]]@profileMatrix
+  tmp<-t(t(tmp)/colSums(tmp))
+  gc<-c(gc, sum(rowSums(tmp[2:3,])/sum(tmp)))
+}
+names(gc)<-names(pfm2_dups)
+gc<-as.data.frame(gc)
+gc$motif<-names(pfm2_dups)
+
+# only non-HOT sites
+tmp<-mm_ChIP_DLPFC[which(union_DLPFC$HOT=="NOT"),]
+NOT<-union_DLPFC[which(union_DLPFC$HOT=="NOT"),]
+# All peaks including HOT sites
+tmp2<-mm_ChIP_DLPFC
+HOT<-union_DLPFC
+
+
+TFs<-unique(unlist_DLPFC$name)
+prop_NOT<-c()
+prop_HOT<-c()
+for( i in 1:length(TFs)){
+  IN<-colSums(tmp[grepl(TFs[i],NOT$TF),])/length(NOT[grepl(TFs[i],NOT$TF)])
+  IN_HOT<-colSums(tmp2[grepl(TFs[i],HOT$TF),])/length(HOT[grepl(TFs[i],HOT$TF)])
+  prop_NOT<-rbind(prop_NOT, IN)
+  prop_HOT<-rbind(prop_HOT, IN_HOT)
+}
+
+rownames(prop_NOT)<-TFs
+colnames(prop_NOT)<-colnames(tmp)
+prop_NOT.s<-as.data.frame(prop_NOT)
+prop_NOT.s$TF<-rownames(prop_NOT.s)
+prop_NOT.m<-melt(prop_NOT.s)
+colnames(prop_NOT.m)[3]<-"NOT"
+
+rownames(prop_HOT)<-TFs
+colnames(prop_HOT)<-colnames(tmp2)
+prop_HOT.s<-as.data.frame(prop_HOT)
+prop_HOT.s$TF<-rownames(prop_HOT.s)
+prop_HOT.m<-melt(prop_HOT.s)
+colnames(prop_HOT.m)[3]<-"HOT"
+
+merged<-merge(prop_NOT.m[which(prop_NOT.m$TF==prop_NOT.m$variable),], prop_HOT.m[which(prop_HOT.m$TF==prop_HOT.m$variable),], by="TF")
+merge<-merge(merged, gc, by.x="TF", by.y="motif")
+merge$delta<-merge$HOT-merge$NOT
+merge$pos<-merge$delta>0
+
+pdf("Delta_motif_proportion_byGCpercent.pdf", width=5, height=5)
+ggplot(merge, aes(x=gc,y=delta))+geom_point()+theme_classic()+xlab("GC %")+ylab("HOT prop - not HOT prop")+geom_text_repel(aes(label=TF))+theme(legend.position="none")+scale_color_manual(values=c("darkslategray3","grey54"))+ylim(-0.5, 0.5)+xlim(0,1)+geom_hline(yintercept=0, linetype="dashed", color="grey65")
+
+dev.off()
+```
+
+### Supp Fig: ENCODE
+
+```{r, eval=F}
+files=as.list(readLines("encode_data/ENCODE_chip.txt"))
+m=sapply(strsplit(unlist(files),"[/]"),"[[",10)
+m2=sapply(strsplit(m,"[.]"),"[[",1)
+m2<-ifelse(m2=="NRSF","REST",m2)
+chip_list=lapply(files,function(x){
+  chip=import(x,format="bb")}) 
+
+for(i in 1:length(chip_list)){
+  chip_list[[i]]$TF<-m2[i]
+}
+chip_list<-chip_list[2:length(m2)]
+unlist_ENCODE<-do.call(c, chip_list) 
+seqlevels(unlist_ENCODE, pruning.mode="coarse")<-seqlevels(unlist_ENCODE)[-c(24,25,26)]
+motif_pos<-matchMotifs(pfm2_dups,unlist_ENCODE, genome = BSgenome.Hsapiens.UCSC.hg38)
+mm_ChIP_DLPFC<-motifMatches(motif_pos)
+
+
+TFs_e<-unique(unlist_ENCODE$TF)
+TFs_e<-TFs_e[TFs_e %in% colnames(mm_ChIP_DLPFC)]
+prop<-c()
+for ( i in 1:length(TFs_e)){
+  tmp<-mm_ChIP_DLPFC[which(unlist_ENCODE$TF==TFs_e[i]),TFs_e[i]]
+  prop<-c(prop, sum(tmp/length(tmp)))
+}
+df<-data.frame(Motif=TFs_e, prop_ENCODE=prop)
+tmp.m<-read.csv("Motif_proportion.csv")
+tmp.m<-tmp.m[which(tmp.m$TF==tmp.m$Motif),]
+mer<-merge(tmp.m[,-4], df, by="Motif")
+mer<-melt(mer)
+mer$variable<-ifelse(mer$variable=="proportion","BrainTF","ENCODE")
+mer<-mer[order(mer$variable, mer$value),]
+mer$TF<-factor(mer$TF, levels=unique(mer$TF))
+pdf("BrainTF_ENCODE_motif_proportion.pdf", width=5, height=3)
+ggplot(mer, aes(x=TF,y=value, fill=variable))+geom_bar(stat="identity", position="dodge",width=0.75)+ scale_fill_manual(values=c("darkgoldenrod3","mediumorchid3"), name="dataset")+theme_bw()+ylab("Proportion with motif")+theme(axis.text.x=element_text(angle=45, vjust=0.97,hjust= 0.9))
+dev.off()
+```
+
+
+# Figure 5:  Correlating DAP binding with gene expression and chromatin accessibility.
+## Fig 5A: Heatmap
+
+```{r ,eval=F}
+library(EnrichedHeatmap)
+library(circlize)
+
+
+
+counts_bulk_input = read.table("star_stranded-reverse_counts.txt",sep="\t", header = TRUE,check.names=FALSE)
+
+GRCh38_E83 <- rtracklayer::import("rnaseq_pipeline/genomes_processed/GRCh38_E83/genesets.gtf")
+GRCh38_E83 <- GRCh38_E83[GRCh38_E83$type %in% "gene",]
+GRCh38_E83@elementMetadata <- GRCh38_E83@elementMetadata[,c("gene_id","gene_name","gene_biotype")]
+GRCh38_E83<-GRCh38_E83[which(GRCh38_E83$gene_biotype=="protein_coding"),]
+
+
+
+## biomart meta to calculate TPM
+biomart_tab = read.table("mart_export.txt",sep="\t", header = TRUE,check.names=FALSE)
+colnames(biomart_tab) <- c("gene_id","A","B","C","MANE","length","gene_name","TSL")
+biomart_tab <- biomart_tab[order(biomart_tab$gene_name),]
+biomart_tab <- biomart_tab[order(biomart_tab$MANE,decreasing = TRUE),]
+biomart_tab <- biomart_tab[!duplicated(biomart_tab$gene_name),]
+
+gxc <- inner_join(counts_bulk_input, biomart_tab[,c("gene_id","length")], by="gene_id")
+genes <- gxc[,c("gene_id","length")]
+counts <- gxc %>% select(-c(gene_id, length))
+
+
+# Normalize to TPM
+#https://gist.github.com/slowkow/6e34ccb4d1311b8fe62e
+tpm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(rate) * 1e6
+}
+tpms <- apply(counts, 2, function(x) tpm(x, genes$length))
+tpms <- as.data.frame(tpms)
+tpms$gene_id <- gxc$gene_id
+
+
+gtf <- as.data.frame(GRCh38_E83)
+gtf <- gtf %>% select(-"gene_biotype")
+gtf <- inner_join(gtf, tpms, by="gene_id")
+gtf <- gtf[order(gtf$'1224_DLPFC_rep1',decreasing = TRUE),] #19,599
+gtf <- gtf[!apply(gtf[,8:43]==0, 1, all),] # remove genes with 0 counts in all samples; 18,604 genes remain
+gtf <- gtf[-grep("MT-",gtf$gene_name),] #18,590
+gtf$avgTPM <- apply(gtf[,c("1224_DLPFC_rep1","1224_DLPFC_rep2","1230_DLPFC_rep1","1230_DLPFC_rep2")],1,mean)
+
+#take gene annotations and determine if promoters of genes are HOT and number of DAPs bound
+tpm_gtf <- makeGRangesFromDataFrame(gtf,keep.extra.columns=TRUE)
+seqlevelsStyle(tpm_gtf) <- "UCSC"
+tpm_gtf <- promoters(tpm_gtf, upstream = 1000, downstream = 1000)
+
+ol<-findOverlaps(union_DLPFC,tpm_gtf,minoverlap =100)
+mcols(tpm_gtf)$HOT<-"NOT"
+tpm_gtf[subjectHits(ol)]$HOT<-mcols(union_DLPFC)$HOT[queryHits(ol)]
+
+ol<-findOverlaps(union_DLPFC,tpm_gtf,minoverlap =100)
+mcols(tpm_gtf)$count<-"0"
+tpm_gtf[subjectHits(ol)]$count<-mcols(union_DLPFC)$count[queryHits(ol)]
+
+tpm_gtf$log2DLPFC <- log2(tpm_gtf$avgTPM+0.1)
+
+
+#keep large for import
+tpm_gtf <- resize(tpm_gtf, width=10000, fix="center")
+
+
+K4me3.bw <- import.bw("Dec2018_ChIPseq/H3K4me3_DLPFC_Output/signal/macs2/pooled_rep/25M.GSLv5-8_i7_38-GSLv5-8_i5_59.merge.nodup_pooled.tagAlign_x_30M_dedup_trim_DLPFC_1224_control.nodup_pooled.tagAlign.fc.signal.bw", which=tpm_gtf)
+ATAC.bw <- import.bw("1224_1230_bulk_atac_bio-rep/atac/89e798c6-aef4-4137-98b0-696968d30c56/call-macs2_signal_track_pooled/execution/H3K2FBGXC_s1_1_Nextera_DualIndex_N702-Nextera_DualIndex_N517_SL409553.trim.merged.nodup.no_chrM_MT.tn5.pooled.pval.signal.bigwig", which=tpm_gtf)
+K27me3.bw <- import.bw("Dec2018_ChIPseq/H3K27me3_DLPFC_Output/signal/macs2/pooled_rep/45M.GSLv5-8_i7_56-GSLv5-8_i5_41.merge.nodup_pooled.tagAlign_x_50M.dedup.GSLv5-8_i7_02.merge.nodup_50M.dedup.GSLv5-8_i7_11.merge.nodup.tagAlign.pval.signal.bw", which=tpm_gtf)
+methylation.bw <- import.bw("/methylation/1224_DLPFC.small.smooth.mCG.bw", which=tpm_gtf)
+ChIP_DLPFC.bw <- import.bw("ChIP_IDR.name.sort.bigwig", which=tpm_gtf)
+
+
+
+tpm_gtf_backup <- tpm_gtf
+
+tpm_gtf <- tpm_gtf[which(tpm_gtf$avgTPM>1),] # 14,347 genes remaining
+
+mcols(tpm_gtf)$HOT <- factor(mcols(tpm_gtf)$HOT, levels=c("NOT",  "HOT"))
+sample_size = as.data.frame(tpm_gtf) %>% group_by(HOT) %>% summarize(num=n())
+pdf("boxplot_TPM_HOT.pdf")
+as.data.frame(tpm_gtf) %>%
+  left_join(sample_size) %>%
+  mutate(myaxis = paste0(HOTnCGI, "\n", "n=", num)) %>%
+ggplot(aes(y=log2DLPFC,x=HOTnCGI,fill=HOTnCGI)) + geom_boxplot() +
+  scale_fill_manual(values=c("gray", "blue","purple","red"))
+dev.off()
+
+
+#resize to just TSS before normalizing
+tpm_gtf<-resize(tpm_gtf, width=1, fix="center")
+
+mat1 = normalizeToMatrix(K4me3.bw, tpm_gtf, value_column = "score", w = 50, extend = 4000, background = 0, smooth = TRUE)
+mat2 = normalizeToMatrix(ATAC.bw, tpm_gtf, value_column = "score", w = 50, extend = 4000, background = 0, smooth = TRUE)
+mat4 = normalizeToMatrix(methylation.bw, tpm_gtf, value_column = "score", mean_mode = "absolute", w = 50, extend = 4000, background = NA, smooth = TRUE)
+mat5 = normalizeToMatrix(ChIP_DLPFC.bw, tpm_gtf, value_column = "score", w = 50, extend = 4000, background = 0, smooth = TRUE)
+
+
+# can I make my own boxplots with these values
+tmp <- rowSums(mat1[,-1])
+mcols(tpm_gtf) <- c(mcols(tpm_gtf),tmp)
+colnames(mcols(tpm_gtf))[43] = "K4me3"
+
+tmp <- rowSums(mat2[,-1])
+mcols(tpm_gtf) <- c(mcols(tpm_gtf),tmp)
+colnames(mcols(tpm_gtf))[44] = "ATAC"
+
+tmp <- rowSums(mat4[,-1])
+mcols(tpm_gtf) <- c(mcols(tpm_gtf),tmp)
+colnames(mcols(tpm_gtf))[45] = "Meth"
+
+tmp <- rowSums(mat5[,-1])
+mcols(tpm_gtf) <- c(mcols(tpm_gtf),tmp)
+colnames(mcols(tpm_gtf))[46] = "ChIP"
+
+
+pdf("boxplot_enrichmap_ChIP.pdf",width = 2, height = 2)
+as.data.frame(mcols(tpm_gtf)) %>%
+ggplot(aes(y=K4me3,x=HOTnCGI,fill=HOTnCGI)) + geom_boxplot(outlier.size = 0.1) +
+  scale_fill_manual(values=c("gray", "blue","purple","red")) +
+  theme_classic() +
+  theme(legend.position = "none",axis.text.x=element_blank(), axis.text.y = element_text(angle = 90), panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+  labs(y = "", x = "")
+dev.off()
+
+
+#methylation mat is the one with missing values. Subset all matrices by this
+tpm_gtf_comp<-tpm_gtf[complete.cases(mat4),]
+mat1<-mat1[complete.cases(mat4),]
+mat2<-mat2[complete.cases(mat4),]
+mat5<-mat5[complete.cases(mat4),]
+mat4<-mat4[complete.cases(mat4),]
+
+
+col_fun1 = colorRamp2(c(0,20), c("snow", "darkslategray3"))
+col_fun2 = colorRamp2(c(0,20), c("snow", "magenta"))
+col_fun3 = colorRamp2(c(0,20), c("snow", "darkolivegreen3"))
+col_fun5 = colorRamp2(c(0,2,20), c("snow", "goldenrod1", "darkgreen"))
+col_fun6 = colorRamp2(c(0,0.5,1), c("blue", "white", "red"))
+
+
+TA <- HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = c("blue","red"),lwd=5,alpha=0.8),axis_param = list(facing = "inside")))
+BoxAnno <- HeatmapAnnotation(summary = anno_summary(gp = gpar(fill=c("blue","red")), axis_param = list(side = "left")))
+
+
+pdf("enriched_heatmap_test.pdf",width = 7, height = 7)
+ Heatmap(log2(tpm_gtf_comp$avgTPM+0.1), name = "log2(TPM+0.1)", row_split=tpm_gtf_comp$HOT,width = unit(15, "mm"),  top_annotation = BoxAnno, col=colorRamp2(c(0,8), c("snow2","black")), show_row_dend = FALSE, heatmap_legend_param = list(direction = "horizontal")) +
+   EnrichedHeatmap(mat1,name="H3K4me3", split=tpm_gtf_comp$HOT, column_title = "H3K4me3", col = col_fun1,top_annotation=TA, axis_name = c("-4kb", "TSS", "4kb"),heatmap_legend_param = list(direction = "horizontal")) +
+   EnrichedHeatmap(mat2,name="ATAC", split=tpm_gtf_comp$HOT, column_title = "ATAC", col = col_fun2,top_annotation=TA, axis_name = c("-4kb", "TSS", "4kb"),heatmap_legend_param = list(direction = "horizontal")) +
+   EnrichedHeatmap(mat5,name="ChIP-seq", split=tpm_gtf_comp$HOT, column_title = "ChIP-seq", col = col_fun5, top_annotation=TA, axis_name = c("-4kb", "TSS", "4kb"),heatmap_legend_param = list(direction = "horizontal")) +
+   EnrichedHeatmap(mat4,name="Methylation", split=tpm_gtf_comp$HOT, column_title = "Methylation",col = col_fun6, top_annotation=TA, axis_name = c("-4kb", "TSS", "4kb"),heatmap_legend_param = list(direction = "horizontal"))
+dev.off()
+```
+
+
+## Fig 5B: ATAC signal vs expression
+
+```{r, eval=F}
+
+counts_sort_input = read.table("star_stranded-reverse_counts.txt",sep="\t", header = TRUE,check.names=FALSE)
+counts_sort_input <- counts_sort_input[order(counts_sort_input$'1242_DLPFC_NeuN',decreasing = TRUE),]
+
+# or the previous one if using the old count data
+GRCh38_E83 <- rtracklayer::import("GRCh38_E83/genesets.gtf")
+GRCh38_E83 <- GRCh38_E83[GRCh38_E83$type %in% "gene",]
+GRCh38_E83@elementMetadata <- GRCh38_E83@elementMetadata[,c("gene_id","gene_name","gene_biotype")]
+GRCh38_E83<-GRCh38_E83[which(GRCh38_E83$gene_biotype=="protein_coding"),]
+
+
+## biomart may be better; dowloaded from Ensembl Genes 109
+biomart_tab = read.table("mart_export.txt",sep="\t", header = TRUE,check.names=FALSE)
+biomart_tab <- biomart_tab %>% rename("Gene stable ID"="gene_id","Gene name" = "gene_name","Transcript length (including UTRs and CDS)" = "length","RefSeq match transcript (MANE Select)"="MANE", "Transcript support level (TSL)"="TSL")
+biomart_tab <- biomart_tab[order(biomart_tab$gene_name),]
+biomart_tab <- biomart_tab[order(biomart_tab$MANE,decreasing = TRUE),]
+biomart_tab <- biomart_tab[!duplicated(biomart_tab$gene_name),]
+
+gxc <- inner_join(counts_sort_input, biomart_tab[,c("gene_id","length")], by="gene_id")
+
+genes <- gxc[,c("gene_id","length")]
+counts <- gxc %>% select(-c(gene_id, length))
+
+#https://gist.github.com/slowkow/6e34ccb4d1311b8fe62e
+tpm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(rate) * 1e6
+}
+
+tpms <- apply(counts, 2, function(x) tpm(x, genes$length))
+tpms <- as.data.frame(tpms)
+tpms$gene_id <- gxc$gene_id
+
+
+
+gtf <- as.data.frame(GRCh38_E83)
+gtf <- gtf %>% select(-"gene_biotype")
+gtf <- inner_join(gtf, tpms, by="gene_id")
+gtf <- merge(x=gtf, y=degs[,c("cluster","gene")], by.x="gene_name",by.y="gene",all.x=TRUE)
+gtf <- gtf[order(gtf$'1242_DLPFC_NeuN',decreasing = TRUE),] #19,599
+gtf <- gtf[!apply(gtf[,9:32]==0, 1, all),] # remove genes with 0 counts in all samples; 18,276 genes remain
+gtf <- gtf[-grep("MT-",gtf$gene_name),]
+gtf <- gtf[-which(is.na(gtf$gene_name)),]
+
+gtf[which(gtf$gene_name=="OTX2"),]
+
+
+
+
+
+gtf$avgTPM <- apply(gtf[,c("1238_DLPFC_NeuN","1242_DLPFC_NeuN")],1,mean)
+gtf <- gtf[,-c(8:31)] # just DLPFC_NEUN for now
+gtf <- gtf[which(gtf$avgTPM>0),] #17,062
+
+
+TPM_sort <- makeGRangesFromDataFrame(gtf,keep.extra.columns=TRUE)
+seqlevelsStyle(TPM_sort) <- "UCSC"
+TPM_sort <- promoters(TPM_sort, upstream = 500, downstream = 500)
+#write.table(TPM_sort,"TPM_sort.bed", sep = "\t", quote = FALSE, row.names=FALSE, col.names = F)
+
+ol<-findOverlaps(union_DLPFC_NEUN,TPM_sort,minoverlap =100)
+mcols(TPM_sort)$HOT<-"NOT"
+TPM_sort[subjectHits(ol)]$HOT<-mcols(union_DLPFC_NEUN)$HOT[queryHits(ol)]
+
+CGI <- read.table("hg38_experimentally_defined_CGI_bedlike.tsv",header = TRUE)
+CGI <- makeGRangesFromDataFrame(CGI,keep.extra.columns=TRUE)
+ol<-findOverlaps(TPM_sort, CGI, minoverlap=100)
+TPM_sort$CGI<-"nonCGI"
+TPM_sort[queryHits(ol)]$CGI<-"CGI"
+
+ol<-findOverlaps(enc3,TPM_sort,minoverlap =100)
+mcols(TPM_sort)$encodeLabel<-"none"
+TPM_sort[subjectHits(ol)]$encodeLabel<-mcols(enc3)$encodeLabel[queryHits(ol)]
+
+TPM_sort$HOTnCGI <- paste(TPM_sort$HOT,TPM_sort$CGI, sep="_")
+
+ol<-findOverlaps(union_DLPFC_NEUN,TPM_sort,minoverlap =100)
+mcols(TPM_sort)$count<-"0"
+TPM_sort[subjectHits(ol)]$count<-mcols(union_DLPFC_NEUN)$count[queryHits(ol)]
+
+TPM_sort$log2DLPFC <- log2(TPM_sort$avgTPM)
+
+
+TPM_sort<-resize(TPM_sort, width=1000, fix="center")
+
+bws <- union_DLPFC_NEUN_bw #106,705
+colnames(mcols(bws)) <- gsub("_DLPFC-NEUN","", colnames(mcols(bws)))
+gtfs <- TPM_sort 
+
+ol<-findOverlaps(bws,gtfs,minoverlap =100)
+gtfs_long <- gtfs[subjectHits(ol)]
+mcols(gtfs_long) <- cbind(mcols(gtfs_long),mcols(bws[queryHits(ol)]))
+names(gtfs_long) <- gtfs_long$gene_name
+
+# need to remove the "duplicate" gene rows
+gtfs_long <- gtfs_long[order(mcols(gtfs_long)$H3K4me3,decreasing = TRUE),] # need to bring in histones or ATAC
+gtfs_long <- gtfs_long[!duplicated(gtfs_long$gene_name),]
+
+tab_bws <- as.data.frame(mcols(gtfs_long))
+tab_bws$count <- as.numeric(tab_bws$count)
+tab_bws <- tab_bws[,c(1,3,4,5,9:76)]
+
+#visualize one of the TFs; use ggpubr to plot dotplot with r2
+
+pdf("scatter_DLPFC-NEUN_single.pdf")
+ggscatter(tab_bws, x="ATAC_DLPFC_NeuN", y="log2DLPFC", color = "HOT",
+          add = "reg.line", conf.int = TRUE,
+          alpha=0.4, stroke=0) +
+  stat_cor(aes(color=HOT),label.x = 7) +
+  theme(text = element_text(size = 20)) + 
+  scale_color_manual(values = c("red","blue")) +
+  guides(fill = guide_legend(override.aes = aes(label = "")))
+dev.off()
+
+```
+
+
+## Fig 5C: linear model
+### left
+
+```{r, eval=F}
+union_DLPFC_NEUN<-readRDS("union_DLPFC_NEUN_2000_max_length.rds")
+union_DLPFC_NEUN_bw<-readRDS("union_DLPFC_NEUN_bw.rds")
+counts_sort_input = read.table("star_stranded-reverse_counts.txt",sep="\t", header = TRUE,check.names=FALSE)
+rownames(counts_sort_input)<-counts_sort_input[,1]
+
+#overlap gtf with HOT and cgi
+GRCh38_E83 <- rtracklayer::import("GRCh38_E83/genesets.gtf")
+GRCh38_E83 <- GRCh38_E83[GRCh38_E83$type %in% "gene",]
+GRCh38_E83@elementMetadata <- GRCh38_E83@elementMetadata[,c("gene_id","gene_name","gene_biotype")]
+GRCh38_E83<-GRCh38_E83[which(GRCh38_E83$gene_biotype=="protein_coding"),]
+seqlevelsStyle(GRCh38_E83)<-"UCSC"
+gtf <- as.data.frame(GRCh38_E83)
+
+
+#normalize counts
+gxc <- merge(counts_sort_input, biomart_tab[,c(1,6)], by="gene_id")
+genes <- gxc[,c("gene_id","length")]
+counts <- gxc %>% select(-c(gene_id, length))
+tpm <- function(counts, lengths) {rate <- counts / lengths
+  rate / sum(rate) * 1e6}
+tpms <- apply(counts, 2, function(x) tpm(x, genes$length))
+tpms <- as.data.frame(tpms)
+tpms$gene_id <- gxc$gene_id
+avgTPM <- apply(tpms[,c("1238_DLPFC_NeuN","1242_DLPFC_NeuN")],1,mean) # average DLPFC
+avgTPM<-as.data.frame(cbind(avgTPM=avgTPM, gene_id=gxc$gene_id))
+avgTPM<-avgTPM[which(avgTPM$avgTPM>1),]
+
+#add average to promoter annotation
+gtf <- gtf %>% select(-"gene_biotype")
+gtf <- inner_join(gtf, avgTPM, by="gene_id")
+gtf <- merge(x=gtf, y=degs[,c("cluster","gene")], by.x="gene_name",by.y="gene",all.x=TRUE)
+gtf <- gtf[-grep("MT-",gtf$gene_name),]
+gtf[is.na(gtf$cluster),]$cluster<-"common"
+gtf<-GRanges(gtf)
+gtf<-promoters(gtf) # gtf ranges are now just promoter regions instead of gene body
+#Is promoter CGI?
+cgi<-GRanges(read.table("hg38_experimentally_defined_CGI_bedlike.tsv", header=T))
+over<-findOverlaps(gtf, cgi, minoverlap=100)
+gtf$CGI<-"nonCGI"
+gtf[queryHits(over)]$CGI<-"CGI"
+
+#Is promoter HOT?
+union_DLPFC_NEUN$count<-as.numeric(union_DLPFC_NEUN$count)
+over<-findOverlaps(gtf,union_DLPFC_NEUN)
+gtf$count<-0
+gtf[queryHits(over)]$count<-union_DLPFC_NEUN[subjectHits(over)]$count
+gtf$HOT<-ifelse(gtf$count > quantile(union_DLPFC_NEUN$count, probs=0.9),"HOT","NOT")
+colnames(mcols(union_DLPFC_NEUN_bw))<-sapply(strsplit(colnames(mcols(union_DLPFC_NEUN_bw)) ,"_"),`[`,1)
+
+normalize <- function(x, na.rm = TRUE) {
+    return((x- min(x)) /(max(x)-min(x)))}
+gtf$avgTPM<-as.numeric(gtf$avgTPM)
+gtf2<-gtf[which(gtf$avgTPM<1500),] #For NEUN the only outlier for expression is MADD 
+union_DLPFC_NEUN_bw_scale<-union_DLPFC_NEUN_bw
+mcols(union_DLPFC_NEUN_bw_scale)[,1:61]<-apply(mcols(union_DLPFC_NEUN_bw_scale)[,1:61], 2, normalize)
+
+
+gtf3<-gtf2[which(gtf2$HOT=="HOT"),]
+over<-findOverlaps(union_DLPFC_NEUN_bw, gtf3)
+union_DLPFC_bw_long<-union_DLPFC_NEUN_bw[queryHits(over)]
+union_DLPFC_bw_long$Exp<-gtf3[subjectHits(over)]$avgTPM
+union_DLPFC_bw_long$count<-gtf3[subjectHits(over)]$count
+mat<-as.data.frame(mcols(union_DLPFC_bw_long))
+n<-rownames(mat)
+sat1<-mat[,c(18,62,63)]
+sat1$class<-"HOT_promoter"
+
+gtf3<-gtf2[which(gtf2$HOT=="NOT"),]
+over<-findOverlaps(union_DLPFC_NEUN_bw, gtf3)
+union_DLPFC_bw_long<-union_DLPFC_NEUN_bw[queryHits(over)]
+union_DLPFC_bw_long$Exp<-gtf3[subjectHits(over)]$avgTPM
+union_DLPFC_bw_long$count<-gtf3[subjectHits(over)]$count
+mat2<-as.data.frame(mcols(union_DLPFC_bw_long))
+n<-rownames(mat2)
+sat2<-mat2[,c(18,62,63)]
+sat2$class<-"NOT_promoter"
+
+
+
+betas2<-matrix(nrow=66, ncol=2)
+sig2<-matrix(nrow=66, ncol=2)
+for(i in 1:66){
+  CGI_HOT<-lm(Exp~.,mat[,c(i,67,68)]) #only keep columns for specific factor, num TFs, and expression
+  CGI_NOT<-lm(Exp~.,mat2[,c(i,67,68)])
+  betas2[i,]<-c(summary(CGI_HOT)$coefficients[2,1],summary(CGI_NOT)$coefficients[2,1])
+  sig2[i,]<-c(summary(CGI_HOT)$coefficients[2,4]<0.01, summary(CGI_NOT)$coefficients[2,4]<0.01)
+}
+rownames(betas2)<-colnames(mat)[1:66]
+colnames(betas2)<-c("HOT","NOT")
+
+```
+
+### right
+
+```{r, eval=F}
+links<-GRanges(read.csv("TableS5_Links.csv"))
+gtf3<-gtf2[which(gtf2$HOT=="HOT"),]
+links<-merge(as.data.frame(links),as.data.frame(gtf3)[,c(6,8,9,10,11,12)], by.x="gene",by.y="gene_name")
+links<- links[which(links$annotation!="Promoter"),]
+links<-links[which(links$group!="AD"),]  #remove Alzheimer's specific links
+links<-links[which(links$Excitatory==T | links$Inhibitory==T),] ##only keep neuron links since looking in NeuN sorted
+links_tmp<-subsetByOverlaps(GRanges(links), gtf, invert=T, maxgap=1000) #remove all promoter links not just HOT promoter links
+
+over<-findOverlaps(union_DLPFC_NEUN_bw,links_tmp)
+union_DLPFC_bw_long<-union_DLPFC_NEUN_bw[queryHits(over)]
+union_DLPFC_bw_long$Exp<-as.numeric(links_tmp[subjectHits(over)]$avgTPM)
+union_DLPFC_bw_long$count<-as.numeric(links_tmp[subjectHits(over)]$count)
+GENES<-links_tmp[subjectHits(over)]$gene
+names(union_DLPFC_bw_long)<-seq(1,length(union_DLPFC_bw_long))
+group<-links_tmp[subjectHits(over)]$HOT
+mat<-as.data.frame(mcols(union_DLPFC_bw_long))
+sat3<-mat[,c(18,102,103)]
+sat3$class<-"HOT_enhancer"
+
+
+links<-GRanges(read.csv("TableS5_Links.csv"))
+gtf3<-gtf2[which(gtf2$HOT=="NOT"),]
+links<-merge(as.data.frame(links),as.data.frame(gtf3)[,c(6,8,9,10,11)], by.x="gene",by.y="gene_name")
+links<- links[which(links$annotation!="Promoter"),]
+links<-links[which(links$group!="AD"),] #remove Alzheimer's specific links
+links<-links[which(links$Excitatory==T | links$Inhibitory==T),] #only keep neuron links since looking in NeuN sorted
+links_tmp<-subsetByOverlaps(GRanges(links), gtf, invert=T, maxgap=1000)
+
+over<-findOverlaps(union_DLPFC_NEUN_bw,links_tmp)
+union_DLPFC_bw_long<-union_DLPFC_NEUN_bw[queryHits(over)]
+union_DLPFC_bw_long$Exp<-as.numeric(links_tmp[subjectHits(over)]$avgTPM)
+GENES<-links_tmp[subjectHits(over)]$gene
+names(union_DLPFC_bw_long)<-seq(1,length(union_DLPFC_bw_long))
+group<-links_tmp[subjectHits(over)]$HOT
+over2<-findOverlaps(union_DLPFC_bw_long, union_DLPFC)
+union_DLPFC_bw_long$count<-0
+union_DLPFC_bw_long[queryHits(over2)]$count<-union_DLPFC[subjectHits(over2)]$count
+mat2<-as.data.frame(mcols(union_DLPFC_bw_long))
+sat4<-mat2[,c(18,102,103)]
+sat4$class<-"NOT_enhancer"
+
+#-------------------------------------#
+
+#loop
+betas<-matrix(nrow=66, ncol=2)
+sig<-matrix(nrow=66, ncol=2)
+for(i in 1:66){
+  CGI_HOT<-lm(Exp~.,mat[,c(i,67,68)])
+
+  CGI_NOT<-lm(Exp~.,mat2[,c(i,67,68)])
+  betas[i,]<-c(summary(CGI_HOT)$coefficients[2,1],summary(CGI_NOT)$coefficients[2,1])
+  sig[i,]<-c(summary(CGI_HOT)$coefficients[2,4]<0.01, summary(CGI_NOT)$coefficients[2,4]<0.01)
+}
+colnames(betas)<-c("HOT","NOT")
+rownames(betas)<-colnames(mat)[1:66]
+Beta<-cbind(betas2,betas) #combine promoter and enhancer betas so can cluster rows together
+Sig<-cbind(sig2,sig)
+Sig<-Sig+0
+Beta[is.na(Beta)]<-0
+Sig[is.na(Sig)]<-0
+
+
+split<-ifelse(rownames(betas2)=="ATAC", T, ifelse(grepl("H3K", rownames(betas2)), T, F))
+h_promoter<-Heatmap(as.matrix(betas2), row_split=split,name="Promoter Beta", cluster_columns=F,col=colorRamp2(c(-7,0,7), viridis(3)),row_names_gp=gpar(fontsize=6),row_title = NULL, cell_fun = function(j, i, x, y, w, h, fill) { if(sig2[i, j] >0) {grid.text("*", x, y, gp=gpar(fontsize=15), vjust="center") } }) 
+h_enhancer<-Heatmap(as.matrix(betas), row_split=split,name="Enhancer Beta", cluster_columns=F,col=colorRamp2(c(-5,0,5),  c("#290230","#CC4678FF","#F0F921FF" )),row_names_gp=gpar(fontsize=6),row_title = NULL, cell_fun = function(j, i, x, y, w, h, fill) { if(sig[i, j] >0) {grid.text("*", x, y, gp=gpar(fontsize=15), vjust="center") } }) 
+
+Beta<-Beta[-66,]
+Sig<-Sig[-66,]
+split<-split[-66]
+
+ta<-HeatmapAnnotation(Peak_type=c("Promoter","Promoter","Enhancer","Enhancer"), Promoter_type=c("HOT","not","HOT","not"), col=list(Peak_type=c("Enhancer"="purple", "Promoter"="lightseagreen"), Promoter_type=c("HOT"="red","not"="blue")))
+
+pdf("Heatmap_NEUN_lm_withHistones.pdf", width=5, height=9)
+Heatmap(as.matrix(Beta), row_split=split,name="Beta", cluster_columns=F,col=colorRamp2(c(-2,0,2),  c("#290230","#CC4678FF","#F0F921FF" )),row_names_gp=gpar(fontsize=6),row_title = NULL, cell_fun = function(j, i, x, y, w, h, fill) { if(Sig[i, j] >0) {grid.text("*", x, y, gp=gpar(fontsize=15), vjust="center") } }, top_annotation=ta, column_split=c(0,0,1,1), column_title=F) 
+dev.off()
+
+```
+
+## Fig 5D: ATAC overlap
+
+```{r, eval=F}
+W=list_ChIP_bulk_DLPFC[-grep("H3K",names(list_ChIP_bulk_DLPFC))]
+#ATAC of 3-way sorting#
+ol_atac_DLPFC <- findOverlapsOfPeaks(list_ATAC$DLPFC_NeuN, list_ATAC$DLPFC_Olig2, list_ATAC$DLPFC_NegNeg, maxgap=500)
+makeVennDiagram(ol_atac_DLPFC,fill=c("red","blue","green")) # view a venn diagram
+atac_unique_DLPFC <-  ol_atac_DLPFC$uniquePeaks
+neun_atac_peaks=atac_unique_DLPFC[grep("NeuN",rownames(as.data.frame(atac_unique_DLPFC))),]
+neun_atac_peaks$name = "NEUN"
+neg_atac_peaks=atac_unique_DLPFC[grep("NegNeg",rownames(as.data.frame(atac_unique_DLPFC))),]
+neg_atac_peaks$name = "NEG"
+olig_atac_peaks=atac_unique_DLPFC[grep("Olig2",rownames(as.data.frame(atac_unique_DLPFC))),]
+olig_atac_peaks$name = "OLIG"
+# subset a merged object from a findOverlapsOfPeaks command. The trouble here is that it outputs mcol as <CharacterList>
+merged_peaks= ol_atac_DLPFC$mergedPeaks
+x=as.list(merged_peaks$peakNames)
+non_neuro_atac_peaks <- merged_peaks[-grep("NeuN",x),]
+non_neuro_atac_peaks$name= "non-NEUN"
+common_atac_peaks <- merged_peaks[grep("NeuN",x),]
+common_atac_peaks$name= "common"
+#common_atac_peaks=ol_atac_DLPFC$mergedPeaks # returns all peaks that overlap with anything
+mcols(common_atac_peaks)$peakNames<-NULL # this gets rid of the extra columns
+union_atac_sorted = c(common_atac_peaks,neun_atac_peaks,neg_atac_peaks,olig_atac_peaks,non_neuro_atac_peaks)
+union_atac_sorted <- union_atac_sorted[,1] # keep only first metacolumn, don't need the rest especially since common lacks it
+
+as.data.frame(union_atac_sorted, row.names = NULL) %>%
+  ggplot(aes(x=name)) + geom_bar()
+
+
+### overlaps between ChIP peaks and subset of ATAC peaks by NeuN pos or neg
+# Find percentage of peaks that overlap each subset for each factor
+x=lapply(W,function(x){length(subsetByOverlaps(x,neun_atac_peaks))/length(x)*100})
+y=lapply(W,function(x){length(subsetByOverlaps(x,neg_atac_peaks))/length(x)*100})
+z=lapply(W,function(x){length(subsetByOverlaps(x,common_atac_peaks))/length(x)*100})
+o=lapply(W,function(x){length(subsetByOverlaps(x,olig_atac_peaks))/length(x)*100})
+p=lapply(W,function(x){length(subsetByOverlaps(x,non_neuro_atac_peaks))/length(x)*100})
+# get out of list format
+NeuN_percent=t(t(unlist(x)))
+neg_percent=t(t(unlist(y)))
+common_percent=t(t(unlist(z)))
+olig_percent=t(t(unlist(o)))
+nonNEUN_percent=t(t(unlist(p)))
+# get percentage of peaks that bind to none and make a table of all four
+nonATAC_percent=100-(NeuN_percent+neg_percent+common_percent+olig_percent+nonNEUN_percent)
+NeuN_percent_tab=as.data.frame(cbind(nonATAC_percent,common_percent,neg_percent,nonNEUN_percent,olig_percent,NeuN_percent))
+colnames(NeuN_percent_tab)=c("TF-only","Common","NEG","nonNEUN","OLIG","NEUN")
+# rowSums(NeuN_percent_tab) #double check that everything adds up to 100
+NeuN_percent_tab=NeuN_percent_tab[order(NeuN_percent_tab$NEUN,decreasing=TRUE),]
+NeuN_percent_tab=rownames_to_column(NeuN_percent_tab,var = "TF")
+NeuN_percent_tab <- subset(NeuN_percent_tab,Common < 75) # remove those values that are the most common with all regions; helps see interesting things more easily
+# pivot table in order to make stacked percentages for each TF
+NeuN_percent_pivot <- NeuN_percent_tab %>% pivot_longer(-TF, names_to = "category", values_to = "percentage")
+NeuN_percent_pivot$category <- factor(NeuN_percent_pivot$category, levels = unique(NeuN_percent_pivot$category)) # note: use levels() to see factor level for plot ordering
+NeuN_percent_pivot$TF <- factor(NeuN_percent_pivot$TF, levels = unique(NeuN_percent_pivot$TF))
+
+pdf("ATAC_bar_ChIP.pdf",width = 8, height = 5)
+NeuN_percent_pivot %>%
+ggplot(aes(fill=category,y=percentage, x=TF)) + geom_bar(position = "fill", stat= "identity") + scale_fill_manual(values = c("black","gray","red","yellow","green","blue")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, size = 12)) +
+  labs(y="Proportion of Peaks",x=NULL)
+dev.off()
+
+```
+
+## Fig 5E: Skew vs ATAC signal
+
+```{r, eval=F}
+union_DLPFC_bw_ATAC <- readRDS("union_DLPFC_bw_ATAC.rds")
+
+
+W <- list_ChIP_bulk_DLPFC
+W2 <- GRangesList(W) # convert list to Grangelist for findOverlaps
+skew_list <-lapply(W2,function(x){
+  ol <- findOverlaps(x, union_DLPFC_bw_ATAC)
+  out_vals <- mcols(union_DLPFC_bw_ATAC)$ATAC_DLPFC_NEUN[subjectHits(ol)]
+  return(out_vals)
+})
+ATAC_mean_NEUN <- sapply(skew_list, mean)
+
+
+W <- list_ChIP_bulk_DLPFC
+W2 <- GRangesList(W) # convert list to Grangelist for findOverlaps
+skew_list <-lapply(W2,function(x){
+  ol <- findOverlaps(x, union_DLPFC_bw_ATAC)
+  out_vals <- mcols(union_DLPFC_bw_ATAC)$ATAC_DLPFC_Olig2[subjectHits(ol)]
+  return(out_vals)
+})
+ATAC_mean_OLIG2 <- sapply(skew_list, mean)
+
+
+W <- list_ChIP_bulk_DLPFC
+W2 <- GRangesList(W) # convert list to Grangelist for findOverlaps
+skew_list <-lapply(W2,function(x){
+  ol <- findOverlaps(x, union_DLPFC_bw_ATAC)
+  out_vals <- mcols(union_DLPFC_bw_ATAC)$ATAC_DLPFC_NegNeg[subjectHits(ol)]
+  return(out_vals)
+})
+ATAC_mean_NEG <- sapply(skew_list, mean)
+
+
+## PICK UP FROM the cell types above
+tab_skew <- as.data.frame(cbind(ATAC_mean_NEUN,ATAC_mean_OLIG2,ATAC_mean_NEG))
+tab_skew <- apply(tab_skew, 2, scale)
+tab_skew <- as.data.frame(cbind(skew_vals_DLPFC,tab_skew))
+tab_skew$TF <- rownames(tab_skew)
+tab_skew$skew_vals_DLPFC_inv <- tab_skew$skew_vals_DLPFC*-1
+
+
+
+tab_melt <- melt(tab_skew,measure.vars=c("ATAC_mean_NEUN","ATAC_mean_OLIG2","ATAC_mean_NEG"))
+
+pdf("skew_atac_sort_HOT.pdf",width = 7.5, height = 6)
+ggplot(tab_melt,aes(x=skew_vals_DLPFC_inv,y=value,color=variable)) + geom_point(size=3) +
+  #geom_label_repel(aes(label=TF),size=3,alpha=0.5,box.padding = 0.1,fontface="bold") +
+  geom_label_repel(data = tab_melt %>% 
+                     filter(skew_vals_DLPFC_inv<0.2 & value>0),aes(label=TF),alpha=0.7,point.padding=2,fontface="bold",
+                   show.legend = FALSE) +
+  geom_label_repel(data = tab_melt %>% 
+                     filter(skew_vals_DLPFC_inv< -0.2 & value< -1),aes(label=TF),alpha=0.7,fontface="bold",
+                   show.legend = FALSE) +
+  geom_label_repel(data = tab_melt %>% 
+                     filter(skew_vals_DLPFC_inv > 1 & value < 0),aes(label=TF),alpha=0.7,fontface="bold",
+                   show.legend = FALSE) +
+  scale_color_manual(values=c("ATAC_mean_NEUN"="blue","ATAC_mean_OLIG2"="darkgreen","ATAC_mean_NEG"="red"),
+                     labels=c('NEUN', 'OLIG', 'NEG')) +
+  labs(x="HOT skew",y="Normalized Average ATAC signal") +
+  theme_classic(base_size = 20)
+dev.off()
+
+```
+
+# Supp Fig 5
+## Fig S5B
+
+```{r, eval=F}
+ #Signal quantification of ATAC over union_DLPFC regions, done in the other chapter. 
+
+ol<-findOverlaps(union_DLPFC,union_DLPFC_bw_ATAC,minoverlap =1)
+mcols(union_DLPFC_bw_ATAC)$count<-"NA"
+union_DLPFC_bw_ATAC[subjectHits(ol)]$count<-mcols(union_DLPFC)$count[queryHits(ol)]
+mcols(union_DLPFC_bw_ATAC)$count <- as.numeric(mcols(union_DLPFC_bw_ATAC)$count)
+
+# look for a single TF
+union_DLPFC_bw_ATAC$TF= union_DLPFC_bw_ATAC %over% list_ChIP_bulk_DLPFC$SATB2
+
+df_union_DLPFC_bw_ATAC <- as.data.frame(union_DLPFC_bw_ATAC, row.names = NULL)
+df_union_DLPFC_bw_ATAC <- df_union_DLPFC_bw_ATAC[order(df_union_DLPFC_bw_ATAC$TF,decreasing=TRUE),]
+
+
+pdf("dotplot_ATAC_TFcount_DLPFC2.pdf",width = 7, height = 5)
+ggplot(df_union_DLPFC_bw_ATAC,aes(x=count,y=ATAC_DLPFC_NeuN,color=TF)) + geom_point(size=2, stroke=0) +
+  geom_xsidedensity(aes(y=stat(density),alpha = 0.2),fill="slategray") +
+  geom_ysidedensity(aes(x=stat(density),alpha = 0.2),fill="slategray") +
+  labs(y="Normalized ATAC-seq Signal", x="Number of Factors Bound")
+dev.off()
+
+```
+
+## Fig S5C
+
+```{r, eval=F}
+union_DLPFC_bw<-readRDS("union_DLPFC_bw.rds")
+
+#get exon lengths
+biomart_tab = read.table("mart_export.txt",sep="\t", header = TRUE,check.names=FALSE)
+colnames(biomart_tab)[c(1,5,6,7)]<-c("gene_id","MANE","length", "gene_name")
+biomart_tab <- biomart_tab[order(biomart_tab$gene_name),]
+biomart_tab <- biomart_tab[order(biomart_tab$MANE,decreasing = TRUE),]
+biomart_tab <- biomart_tab[!duplicated(biomart_tab$gene_name),]
+
+#read in raw counts
+counts_bulk_input = read.table("star_stranded-reverse_counts.txt",sep="\t", header = TRUE,check.names=FALSE)
+#read.table("BrainTF/RNA/BULK/summary_Dedup.tsv", sep="\t", header=T)
+rownames(counts_bulk_input)<-counts_bulk_input[,1]
+
+#overlap gtf with HOT and cgi
+GRCh38_E83<-rtracklayer::import("BrainTF/RNA/STAR/gencode.v42.primary_assembly.annotation.gtf")
+GRCh38_E83 <- GRCh38_E83[GRCh38_E83$type %in% "gene",]
+GRCh38_E83@elementMetadata <- GRCh38_E83@elementMetadata[,c("gene_id","gene_name","gene_biotype")]
+GRCh38_E83<-GRCh38_E83[which(GRCh38_E83$gene_biotype=="protein_coding"),]
+seqlevelsStyle(GRCh38_E83)<-"UCSC"
+gtf <- as.data.frame(GRCh38_E83)
+
+
+#normalize counts
+gxc <- merge(counts_bulk_input, biomart_tab[,c(1,6)], by="gene_id")
+genes <- gxc[,c("gene_id","length")]
+counts <- gxc %>% select(-c(gene_id, length))
+tpm <- function(counts, lengths) {rate <- counts / lengths
+  rate / sum(rate) * 1e6}
+tpms <- apply(counts, 2, function(x) tpm(x, genes$length))
+tpms <- as.data.frame(tpms)
+tpms$gene_id <- gxc$gene_id
+avgTPM <- apply(tpms[,c("1224_DLPFC_rep1","1224_DLPFC_rep2","1230_DLPFC_rep1","1230_DLPFC_rep2")],1,mean) # average DLPFC
+avgTPM<-as.data.frame(cbind(avgTPM=avgTPM, gene_id=gxc$gene_id))
+avgTPM<-avgTPM[which(avgTPM$avgTPM>0),]
+
+#add average to promoter annotation
+gtf <- gtf %>% select(-"gene_biotype")
+gtf <- inner_join(gtf, avgTPM, by="gene_id")
+gtf <- merge(x=gtf, y=degs[,c("cluster","gene")], by.x="gene_name",by.y="gene",all.x=TRUE)
+gtf <- gtf[-grep("MT-",gtf$gene_name),]
+gtf[is.na(gtf$cluster),]$cluster<-"common"
+gtf<-GRanges(gtf)
+gtf<-promoters(gtf,upstream = 3000, downstream = 500, )
+#Is promoter CGI?
+cgi<-GRanges(read.table("hg38_experimentally_defined_CGI_bedlike.tsv", header=T))
+over<-findOverlaps(gtf, cgi, minoverlap=100)
+gtf$CGI<-"nonCGI"
+gtf[queryHits(over)]$CGI<-"CGI"
+
+#Is promoter HOT?
+union_DLPFC$count<-as.numeric(union_DLPFC$count)
+over<-findOverlaps(gtf,union_DLPFC)
+gtf$count<-0
+gtf[queryHits(over)]$count<-union_DLPFC[subjectHits(over)]$count
+gtf$HOT<-ifelse(gtf$count > quantile(union_DLPFC$count, probs=0.9),"HOT","NOT")
+seqlevelsStyle(gtf)<-"UCSC"
+
+
+
+
+normalize <- function(x, na.rm = TRUE) {
+    return((x- min(x)) /(max(x)-min(x)))
+}
+
+gtf$avgTPM<-as.numeric(gtf$avgTPM)
+gtf2<-gtf[which(gtf$avgTPM<5000),]
+union_DLPFC_bw_scale<-union_DLPFC_bw
+mcols(union_DLPFC_bw_scale)[,1:101]<-apply(mcols(union_DLPFC_bw_scale)[,1:101], 2, normalize)
+
+
+
+##################
+#Promoter
+
+
+gtf3<-gtf2[which(gtf2$HOT=="HOT"),]
+over<-findOverlaps(union_DLPFC_bw, gtf3)
+union_DLPFC_bw_long<-union_DLPFC_bw[queryHits(over)]
+union_DLPFC_bw_long$Exp<-gtf3[subjectHits(over)]$avgTPM
+union_DLPFC_bw_long$count<-gtf3[subjectHits(over)]$count
+mat<-as.data.frame(mcols(union_DLPFC_bw_long))
+n<-rownames(mat)
+sat1<-mat[,c(18,102,103)]
+sat1$class<-"HOT_promoter"
+
+gtf3<-gtf2[which(gtf2$HOT=="NOT"),]
+over<-findOverlaps(union_DLPFC_bw, gtf3)
+union_DLPFC_bw_long<-union_DLPFC_bw[queryHits(over)]
+union_DLPFC_bw_long$Exp<-gtf3[subjectHits(over)]$avgTPM
+union_DLPFC_bw_long$count<-gtf3[subjectHits(over)]$count
+mat2<-as.data.frame(mcols(union_DLPFC_bw_long))
+n<-rownames(mat2)
+sat2<-mat2[,c(18,102,103)]
+sat2$class<-"NOT_promoter"
+
+
+
+betas2<-matrix(nrow=101, ncol=2)
+sig2<-matrix(nrow=101, ncol=2)
+for(i in 1:101){
+  CGI_HOT<-lm(Exp~.,mat[,c(i,102,103)])
+  CGI_NOT<-lm(Exp~.,mat2[,c(i,102,103)])
+   betas2[i,]<-c(summary(CGI_HOT)$coefficients[2,1],summary(CGI_NOT)$coefficients[2,1])
+  sig2[i,]<-c(summary(CGI_HOT)$coefficients[2,4]<0.01, summary(CGI_NOT)$coefficients[2,4]<0.01)
+}
+rownames(betas2)<-colnames(mat)[1:101]
+colnames(betas2)<-c("HOT","NOT")
+
+
+links<-GRanges(read.csv("scAnalysis/RINdrop/TableS5_Links.csv"))
+gtf3<-gtf2[which(gtf2$HOT=="HOT"),]
+links<-merge(as.data.frame(links),as.data.frame(gtf3)[,c(6,8,9,10,11,12)], by.x="gene",by.y="gene_name")
+links<- links[which(links$annotation!="Promoter"),]
+links<-links[which(links$group!="AD"),]
+#links<-links[which(links$ATAC_num<2),]
+links_tmp<-subsetByOverlaps(GRanges(links), gtf, invert=T, maxgap=1000) #remove all promoter links not just HOT promoter links
+#links_tmp<-GRanges(links_tmp)
+over<-findOverlaps(union_DLPFC_bw,links_tmp)
+union_DLPFC_bw_long<-union_DLPFC_bw[queryHits(over)]
+union_DLPFC_bw_long$Exp<-as.numeric(links_tmp[subjectHits(over)]$avgTPM)
+union_DLPFC_bw_long$count<-as.numeric(links_tmp[subjectHits(over)]$count)
+GENES<-links_tmp[subjectHits(over)]$gene
+names(union_DLPFC_bw_long)<-seq(1,length(union_DLPFC_bw_long))
+group<-links_tmp[subjectHits(over)]$HOT
+mat<-as.data.frame(mcols(union_DLPFC_bw_long))
+sat3<-mat[,c(18,102,103)]
+sat3$class<-"HOT_enhancer"
+
+
+#####################
+#Enhancer
+
+links<-GRanges(read.csv("scAnalysis/RINdrop/TableS5_Links.csv"))
+gtf3<-gtf2[which(gtf2$HOT=="NOT"),]
+links<-merge(as.data.frame(links),as.data.frame(gtf3)[,c(6,8,9,10,11)], by.x="gene",by.y="gene_name")
+links<- links[which(links$annotation!="Promoter"),]
+links<-links[which(links$group!="AD"),]
+#links<-links[which(links$ATAC_num<2),]
+links_tmp<-subsetByOverlaps(GRanges(links), gtf, invert=T, maxgap=1000)
+#links_tmp<-GRanges(links_tmp)
+over<-findOverlaps(union_DLPFC_bw,links_tmp)
+union_DLPFC_bw_long<-union_DLPFC_bw[queryHits(over)]
+union_DLPFC_bw_long$Exp<-as.numeric(links_tmp[subjectHits(over)]$avgTPM)
+GENES<-links_tmp[subjectHits(over)]$gene
+names(union_DLPFC_bw_long)<-seq(1,length(union_DLPFC_bw_long))
+group<-links_tmp[subjectHits(over)]$HOT
+over2<-findOverlaps(union_DLPFC_bw_long, union_DLPFC)
+union_DLPFC_bw_long$count<-0
+union_DLPFC_bw_long[queryHits(over2)]$count<-union_DLPFC[subjectHits(over2)]$count
+mat2<-as.data.frame(mcols(union_DLPFC_bw_long))
+sat4<-mat2[,c(18,102,103)]
+sat4$class<-"NOT_enhancer"
+
+#-------------------------------------#
+
+#loop
+betas<-matrix(nrow=101, ncol=2)
+sig<-matrix(nrow=101, ncol=2)
+for(i in 1:101){
+  CGI_HOT<-lm(Exp~.,mat[,c(i,102,103)])
+
+  CGI_NOT<-lm(Exp~.,mat2[,c(i,102,103)])
+   betas[i,]<-c(summary(CGI_HOT)$coefficients[2,1],summary(CGI_NOT)$coefficients[2,1])
+  sig[i,]<-c(summary(CGI_HOT)$coefficients[2,4]<0.01, summary(CGI_NOT)$coefficients[2,4]<0.01)
+}
+colnames(betas)<-c("HOT","NOT")
+rownames(betas)<-colnames(mat)[1:101]
+Beta<-cbind(betas2,betas)
+Sig<-cbind(sig2,sig)
+Sig<-Sig+0
+
+ta<-HeatmapAnnotation(Peak_type=c("Promoter","Promoter","Enhancer","Enhancer"), Promoter_type=c("HOT","not","HOT","not"), col=list(Peak_type=c("Enhancer"="purple", "Promoter"="lightseagreen"), Promoter_type=c("HOT"="red","not"="blue")))
+
+split<-ifelse(rownames(betas2)=="count", T, ifelse(grepl("H3K", rownames(betas2)), T, F))
+h_promoter<-Heatmap(as.matrix(betas2), row_split=split,name="Promoter Beta", cluster_columns=F,col=colorRamp2(c(-7,0,7), viridis(3)),row_names_gp=gpar(fontsize=6),row_title = NULL, cell_fun = function(j, i, x, y, w, h, fill) { if(sig2[i, j] >0) {grid.text("*", x, y, gp=gpar(fontsize=15), vjust="center") } }) 
+
+h_enhancer<-Heatmap(as.matrix(betas), row_split=split,name="Enhancer Beta", cluster_columns=F,col=colorRamp2(c(-5,0,5),  c("#290230","#CC4678FF","#F0F921FF" )),row_names_gp=gpar(fontsize=6),row_title = NULL, cell_fun = function(j, i, x, y, w, h, fill) { if(sig[i, j] >0) {grid.text("*", x, y, gp=gpar(fontsize=15), vjust="center") } }) 
+
+pdf("Heatmap_lm_HOT-not.pdf", width=5, height=12)
+h_promoter+h_enhancer
+dev.off()
+
+
+#get prop promoter
+
+over<-findOverlaps(unlist_DLPFC, enc[which(enc$encodeLabel=="PLS"),])
+unlist_DLPFC$Promoter<-F
+unlist_DLPFC[queryHits(over)]$Promoter<-T
+props<-prop.table(table(unlist_DLPFC$name, unlist_DLPFC$Promoter),1)[,2]
+props<-props[rownames(Beta)]
+ra<-rowAnnotation(Proportion_promoter=props,col=list(Proportion_promoter=colorRamp2(c(0,0.6,0.9),  c("grey95","red","darkred"))))
+
+pdf("Heatmap_lm_HOT-not_joined_noADlinks.pdf", width=6, height=12)
+Heatmap(as.matrix(Beta), row_split=split,name="Beta", cluster_columns=F,col=colorRamp2(c(-5,0,5),  c("#290230","#CC4678FF","#F0F921FF" )),row_names_gp=gpar(fontsize=6),row_title = NULL, cell_fun = function(j, i, x, y, w, h, fill) { if(Sig[i, j] >0) {grid.text("*", x, y, gp=gpar(fontsize=15), vjust="center") } }, top_annotation=ta, column_split=c(0,0,1,1), column_title=NULL, right_annotation=ra )
+dev.off()
+
+
+
+```
+
+
+## Fig S5D
+
+```{r, eval=F}
+links<-GRanges(read.csv("scAnalysis/RINdrop/TableS5_Links.csv"))
+links<-links[which(links$annotation!="Promoter"),]
+links<-links[which(links$group!="AD"),]
+
+TFs<-unique(unlist_DLPFC$name)
+mat<-matrix(nrow=length(TFs), ncol=4)
+sig<-matrix(nrow=length(TFs),ncol=4)
+for(i in 1:length(TFs)){
+  k<-1
+   tmp1<-union_DLPFC[grepl(TFs[i], union_DLPFC$TF),]
+  tmp2<-union_DLPFC[!grepl(TFs[i], union_DLPFC$TF),]
+  for(j in c("Astrocytes","Oligodendrocytes","Neuron","Microglia")){
+    j<-ifelse(j=="Neuron",c("Excitatory","Inhbitory","Excitatory,Inhibitory","Inhibitory,Excitatory"), j)
+    p1<-length(subsetByOverlaps(tmp1, links[which(links$CT %in% j),]))
+    p2<-length(subsetByOverlaps(tmp2, links[which(links$CT %in% j),]))
+    df<-data.frame(A=c(p1, length(tmp1)-p1), B=c(p2, length(tmp2)-p2))
+    mat[i,k]<-log2((df[1,1]/df[2,1])/(df[1,2]/df[2,2]))
+    sig[i,k]<-fisher.test(df)$p.value<0.01
+    k=k+1
+  }
+}
+colnames(mat)<-c("Ast","Olig","Neuron", "Mic")
+rownames(mat)<-TFs
+mat[mat>10]<-10
+mat[mat< -10]<- -10
+rm<-apply(mat, 1, max)
+pdf("Cell_type_link_enrichement_BrainTF_bulk_noADlinks.pdf", width=6, height=4)
+Heatmap(mat[which(rm>0.5),], name="log2FE",cluster_columns=F,col=colorRamp2(c(-3,0,3), c("blue","white","red")),row_names_gp=gpar(fontsize=14),column_names_side = "top",column_names_rot = 0, column_names_centered = TRUE)  
+dev.off()
+
+```
+
+
+
+
+## Fig S5E
+
+```{r, eval=F}
+#ATAC of 3-way sorting#
+ol_atac_OL <- findOverlapsOfPeaks(list_ATAC$OL_NeuN, list_ATAC$OL_Olig2, list_ATAC$OL_NegNeg, maxgap=500)
+makeVennDiagram(ol_atac_OL,fill=c("red","blue","green")) # view a venn diagram
+atac_unique_OL <-  ol_atac_OL$uniquePeaks
+neun_atac_peaks=atac_unique_OL[grep("NeuN",rownames(as.data.frame(atac_unique_OL))),]
+neun_atac_peaks$name = "NEUN"
+neg_atac_peaks=atac_unique_OL[grep("NegNeg",rownames(as.data.frame(atac_unique_OL))),]
+neg_atac_peaks$name = "NEG"
+olig_atac_peaks=atac_unique_OL[grep("Olig2",rownames(as.data.frame(atac_unique_OL))),]
+olig_atac_peaks$name = "OLIG"
+# subset a merged object from a findOverlapsOfPeaks command. The trouble here is that it outputs mcol as <CharacterList>
+merged_peaks= ol_atac_OL$mergedPeaks
+x=as.list(merged_peaks$peakNames)
+non_neuro_atac_peaks <- merged_peaks[-grep("NeuN",x),]
+non_neuro_atac_peaks$name= "non-NEUN"
+common_atac_peaks <- merged_peaks[grep("NeuN",x),]
+common_atac_peaks$name= "common"
+#common_atac_peaks=ol_atac_OL$mergedPeaks # returns all peaks that overlap with anything
+mcols(common_atac_peaks)$peakNames<-NULL # this gets rid of the extra columns
+union_atac_sorted = c(common_atac_peaks,neun_atac_peaks,neg_atac_peaks,olig_atac_peaks,non_neuro_atac_peaks)
+union_atac_sorted <- union_atac_sorted[,1] # keep only first metacolumn, don't need the rest especially since common lacks it
+
+as.data.frame(union_atac_sorted, row.names = NULL) %>%
+  ggplot(aes(x=name)) + geom_bar()
+
+### overlaps between ChIP peaks and subset of ATAC peaks by NeuN pos or neg
+W=list_ChIP_bulk_OL[-grep("H3K",names(list_ChIP_bulk_OL))] # I already brought this in
+# Find percentage of peaks that overlap each subset for each factor
+x=lapply(W,function(x){length(subsetByOverlaps(x,neun_atac_peaks))/length(x)*100})
+y=lapply(W,function(x){length(subsetByOverlaps(x,neg_atac_peaks))/length(x)*100})
+z=lapply(W,function(x){length(subsetByOverlaps(x,common_atac_peaks))/length(x)*100})
+o=lapply(W,function(x){length(subsetByOverlaps(x,olig_atac_peaks))/length(x)*100})
+p=lapply(W,function(x){length(subsetByOverlaps(x,non_neuro_atac_peaks))/length(x)*100})
+# get out of list format
+NeuN_percent=t(t(unlist(x)))
+neg_percent=t(t(unlist(y)))
+common_percent=t(t(unlist(z)))
+olig_percent=t(t(unlist(o)))
+nonNEUN_percent=t(t(unlist(p)))
+# get percentage of peaks that bind to none and make a table of all four
+nonATAC_percent=100-(NeuN_percent+neg_percent+common_percent+olig_percent+nonNEUN_percent)
+NeuN_percent_tab=as.data.frame(cbind(nonATAC_percent,common_percent,neg_percent,nonNEUN_percent,olig_percent,NeuN_percent))
+colnames(NeuN_percent_tab)=c("TF-only","Common","NEG","nonNEUN","OLIG","NEUN")
+# rowSums(NeuN_percent_tab) #double check that everything adds up to 100
+NeuN_percent_tab=NeuN_percent_tab[order(NeuN_percent_tab$NEUN,decreasing=TRUE),]
+NeuN_percent_tab=rownames_to_column(NeuN_percent_tab,var = "TF")
+# pivot table in order to make stacked percentages for each TF
+NeuN_percent_pivot <- NeuN_percent_tab %>% pivot_longer(-TF, names_to = "category", values_to = "percentage")
+NeuN_percent_pivot$category <- factor(NeuN_percent_pivot$category, levels = unique(NeuN_percent_pivot$category)) # note: use levels() to see factor level for plot ordering
+NeuN_percent_pivot$TF <- factor(NeuN_percent_pivot$TF, levels = unique(NeuN_percent_pivot$TF))
+
+pdf("ATAC_bar_ChIP_OL.pdf",width = 15, height = 10)
+NeuN_percent_pivot %>%
+ggplot(aes(fill=category,y=percentage, x=TF)) + geom_bar(position = "fill", stat= "identity") +
+  scale_fill_manual(values = c("black","gray","red","yellow","green","blue")) +
+  theme(axis.text.x = element_text(angle = 90, size = 12), axis.text.y = element_text(size=15), legend.text=element_text(size=20))
+dev.off()
+```
+
+# Figure 6: Comparison of ChIP-seq results with predictive models.
+
+## Virtual ChIP-seq predictions
+
+ran script for each predicted TF and for BULK, NEUN, and OLIG
+
+```{bash, eval=F}
+#!/bin/bash
+
+#BULK
+#RNA=TFBS_prediction/virtChip/Bulk_avgAcrossDLPFC_RNA.tsv.gz
+#SORTED
+RNA=TFBS_prediction/virtChip/Sorted_avgAcrossDLPFC_RNA.tsv.gz
+
+#NeuN
+ATAC=ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_NeuN_idr.optimal_peak.narrowPeak.gz
+#Olig
+#ATAC=ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_Olig2_idr.optimal_peak.narrowPeak.gz
+#Bulk
+#ATAC=1224_1230_bulk_atac_bio-rep/atac/89e798c6-aef4-4137-98b0-696968d30c56/call-idr/shard-0/execution/rep1_vs_rep2.idr0.05.bfilt.narrowPeak.gz
+
+TF=$1
+CT=$2
+
+python virchip/virchip/make_input.py ${TF} sort/${TF}_${CT}_complete.tsv.gz     data/chipExpDir/${TF} \
+        $RNA data/RefTablesSummary \
+        --rna-cell $CT \
+        --blacklist_path data/hg38_EncodeBlackListedRegions_200bpBins.bed.gz \
+        --bin_size 200 --merge-chips\
+        --chromsize-path data/hg38_chrsize.tsv \
+        --dnase-path $ATAC
+
+
+python virchip/virchip/predict.py data/virchipModels sort/${TF}_${CT}_complete.tsv.gz \
+        sort/${TF}_${CT}_predictions.tsv.gz ${TF}
+
+```
+
+
+## Fig 6A:
+
+```{r, eval=F}
+files=as.list(readLines("BrainTF/TFBS_prediction/virtChip/out/ALL_predictions.tsv"))
+files<-files[grepl("predictions",files)]
+n=sapply(strsplit(unlist(files),"[/]"),"[[",10)
+n2=sapply(strsplit(n,"[_]"),"[[",1)
+TF_list=lapply(files,function(x){
+  TF=read.table(x)
+  TF=GRanges(TF)
+    })
+names(TF_list)=n2
+colnames(mcols(TF_list[[1]]))<-"PP"
+for(i in 2:48){
+  colnames(mcols(TF_list[[i]]))<-"PP"}
+unlist<-as.data.frame(TF_list[[1]])
+for(i in 2:42){
+  unlist<-rbind(unlist, as.data.frame(TF_list[[i]]))
+}
+unlist$peak<-rownames(unlist)
+unlist<-GRanges(unlist[!duplicated(unlist$peak),])
+
+
+unlist_DLPFC<-readRDS("unlist_DLPFC.rds")
+unlist_DLPFC$name<-ifelse(unlist_DLPFC$name=="NRSF","REST",ifelse(unlist_DLPFC$name=="SREBP2","SREBF2", 
+                       ifelse(unlist_DLPFC$name=="CREB","CREB1",unlist_DLPFC$name)))
+m2<-unique(unlist_DLPFC$name)
+chip_list<-split(unlist_DLPFC, ~name)
+#only keep ones that have both virChip prediction and actual data
+keep<-n2[which(n2 %in% m2)]
+chip_list2<-chip_list[keep]
+TF_list2<-TF_list[keep]
+
+
+df<-data.frame(TF="A",Threshold=0,recall=0, precision=0, FPR=0)
+for (i in 1:length(keep)){
+  tmp<-data.frame(TF=rep(keep[i],2), Threshold=rep(-1,2),recall=c(0,1), precision=c(1,0),FPR=c(0,0),recall.random=c(0,1), precision.random=c(1,0))
+  for (j in seq(0,0.99,by=0.01)){
+    filtered<-TF_list2[[i]][which(TF_list2[[i]]$PP>j),]
+    over<-findOverlaps(filtered, chip_list2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+     FPR= length(filtered[-queryHits(over)]) /
+      (length(TF_list2[[i]][which(TF_list2[[i]]$PP<j),]) +
+         length(filtered[-queryHits(over)]))
+
+    c<-c(keep[i],j,recall,precision,FPR)
+    tmp<-rbind(tmp,c)
+  }
+  df<-rbind(df,tmp)
+}
+df<-df[-1,]
+#base metrics
+df$recall<-as.numeric(df$recall)
+df$precision<-as.numeric(df$precision)
+df$precision<-ifelse(is.nan(df$precision),1,df$precision)
+df$Threshold<-as.numeric(df$Threshold)
+df$FPR<-as.numeric(df$FPR)
+
+df<-df[which(df$Threshold!=-1),]
+#Get auPR for each TF and add to df for plotting [NOTE: AUC is auPR just name variable didn't change]
+df$F1<-( df$precision*df$recall)/(df$precision+df$recall)
+auc<-c()
+for (i in 1:length(keep)){
+  tmp<-df[which(df$TF==keep[i] & df$Threshold!=-1),]
+  AUC <- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+  auc<-c(auc,AUC)
+}
+auc.df<-data.frame(AUC=auc, TF=keep)
+df<-merge(df,auc.df,by="TF")
+df$auPR<-paste0(df$TF,": ",round(df$AUC,3))
+df2<-df
+df2<-df2[order(-df2$AUC),]
+df2$auPR<-factor(df2$auPR, levels=unique(df2$auPR))
+
+
+
+write.csv(df, "BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv")
+
+
+
+
+atac<-import("1224_1230_bulk_atac_bio-rep/atac/89e798c6-aef4-4137-98b0-696968d30c56/call-idr/shard-0/execution/rep1_vs_rep2.idr0.05.bfilt.narrowPeak.gz")
+library(TFBSTools)
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+ pfm2_dups<-readRDS( "BrainTF/Filtered_PFM.rds")
+
+  #match motifs
+  motif_pos<-matchMotifs(pfm2_dups,atac, genome = BSgenome.Hsapiens.UCSC.hg38,  out="positions")
+
+motif_pos2<-motif_pos[keep] #keep is from reanalysis section. TFs in plot
+
+
+#this gives you TFBS predictions for each tf by just saying any atac peak with the corresponding motif is predicted
+motifs<-list()
+for (i in 1:length(keep)){
+  sp1.motifs<-unique(unlist(motif_pos[grepl(keep[i], toupper(names(motif_pos)))]))
+  if (length(sp1.motifs)>0){
+    sp1.motifs$pos<-paste0(seqnames(sp1.motifs),":",start(sp1.motifs),"-",end(sp1.motifs))
+    #find overlaps with original peak list
+    over<-findOverlaps(atac,sp1.motifs)
+    atac.overlap<-atac[unique(queryHits(over))] #I uniqued to get proportion with motifs but change at this step to get motif position
+    motifs[[i]]<-atac.overlap
+  }
+  else {
+    motifs[[i]]<-sp1.motifs
+  }
+}
+names(motifs)<-keep
+
+#calculate precision and recall for this method
+mf<-data.frame(TF="A",precision=0,recall=0)
+for (i in 1:length(keep)){
+  over<-findOverlaps(motifs[[i]], chip_list2[[i]])
+  p<-length(unique(queryHits(over)))/length(motifs[[i]])
+  r<-length(unique(subjectHits(over)))/length(chip_list2[[i]])
+  c<-c(keep[i],p,r)
+  mf<-rbind(mf, c)
+}
+mf2<-mf
+mf2$recall<-as.numeric(mf2$recall)
+mf2$precision<-as.numeric(mf2$precision)
+
+
+#load back in virtual ChIP-seq predictions to plot
+virt<-read.csv("BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv")
+virt.df<-merge(mf2,virt,by="TF", all.y=T)
+
+pdf("virtChIP_v_motif_rerun.pdf", width=8,height=6)
+ggplot(virt.df[which(virt.df$recall.y!=0 & virt.df$precision.y !=1 & virt.df$TF!="RAD21"),])+geom_line(aes(x=recall.y, y=precision.y))+geom_point(aes(x=recall.x, y=precision.x), shape=8, color="red")+theme_classic()+facet_wrap(~TF)+ylab("precision")+xlab("recall")
+dev.off()
+
+```
+
+
+## Fig 6B:
+
+```{r, eval=F}
+files=as.list(readLines("BrainTF/TFBS_prediction/encode_data/ALL_predictions.txt"))
+n=sapply(strsplit(unlist(files),"[/]"),"[[",10)
+n2=sapply(strsplit(n,"[_]"),"[[",1)
+TF_list=lapply(files,function(x){
+  TF=read.table(x)
+  TF=GRanges(TF)
+    })
+names(TF_list)=n2
+colnames(mcols(TF_list[[1]]))<-"PP"
+tf_unlist<-TF_list[[1]]
+for(i in 2:length(TF_list)){
+  colnames(mcols(TF_list[[i]]))<-"PP"
+  tf_unlist<-c( tf_unlist,TF_list[[i]])}
+
+#add in chipseq idr peaks
+files=as.list(readLines("BrainTF/TFBS_prediction/encode_data/ENCODE_chip.txt"))
+m=sapply(strsplit(unlist(files),"[/]"),"[[",10)
+m2=sapply(strsplit(m,"[.]"),"[[",1)
+m2<-ifelse(m2=="NRSF","REST",m2)
+chip_list=lapply(files,function(x){
+  chip=import(x,format="bb")}) 
+names(chip_list)=m2
+
+#only keep ones that have both virChip prediction and actual data
+keep2<-n2[which(n2 %in% m2)]
+chip_list2<-chip_list[keep2]
+ENC_TF_list2<-TF_list[keep2]
+
+
+en<-data.frame(TF="A",Threshold=0,recall=0, precision=0, FPR=0)
+for (i in 1:length(keep2)){
+  for (j in seq(0,0.99,by=0.01)){
+    filtered<-ENC_TF_list2[[i]][which(ENC_TF_list2[[i]]$PP>j),]
+    over<-findOverlaps(filtered, chip_list2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+    FPR= length(filtered[-queryHits(over)]) / (length(ENC_TF_list2[[i]][which(ENC_TF_list2[[i]]$PP<j),]) + length(filtered[-queryHits(over)])) #FP is ones called positive at filter/ all virtChip-TP
+    c<-c(keep2[i],j,recall,precision,FPR)
+    en<-rbind(en,c)
+  }
+}
+en<-en[-1,]
+#basis metrics
+en$recall<-as.numeric(en$recall)
+en$precision<-as.numeric(en$precision)
+en$precision<-ifelse(is.nan(en$precision),1,en$precision)
+en$Threshold<-as.numeric(en$Threshold)
+en$FPR<-as.numeric(en$FPR)
+
+#add auPR stat
+en$F1<-( en$precision*en$recall)/(en$precision+en$recall)
+auc<-c()
+for (i in 1:length(keep2)){
+tmp<-en[which(en$TF==keep2[i]),]
+AUC <- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+auc<-c(auc,AUC)
+}
+auc.en<-data.frame(AUC=auc, TF=keep)
+auc.en$dataset<-"ENCODE"
+auc.df$dataset<-"BrainTF"
+auc.df<-auc.df[which(auc.df$TF %in% keep),]  #format bulk aupr to match
+auc<-rbind(auc.df, auc.en)
+auc<-auc[order(auc$AUC,decreasing = T),]
+auc$TF<-factor(auc$TF, levels=unique(auc$TF))
+pdf("TFBS_prediction/plots/encode_v_BrainTF_virtualChipseq_batch2.pdf", width=4,height=3)
+ggplot(auc, aes(x=TF,y=AUC,color=as.factor(TF), shape=dataset))+geom_point(size=2)+theme_bw()+ylim(0,1)+theme( axis.text.x=element_text(angle=90))+guides(color="none")+ylab("auPR")+ggtitle("auPR virtual ChIPseq")
+dev.off()
+
+write.csv(en, "BrainTF/TFBS_prediction/analysis/virtualChIP_onENCODE_auPR_batch2.csv")
+
+
+
+
+# load in predictions from BrainTF to plot together
+btf<-read.csv("BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv")
+btf<-btf[!duplicated(btf$TF),]
+both<-merge(btf, auc.en, by="TF")
+both.m<-melt(both[,c(1,10,12)], id.vars="TF")
+both.m$dataset<-ifelse(both.m$variable=="AUC.x", "BrainTF","ENCODE")
+both.m<-both.m[order(both.m$variable, both.m$value, decreasing=T),]
+both.m$TF<-factor(both.m$TF, levels=unique(both.m$TF))
+pdf("VirtualChIP_BrainTF_vs_ENCODE_added.pdf", width=5,height=3)
+ggplot(both.m, aes(x=TF, y=value, fill=dataset))+geom_bar(stat="identity", position="dodge", width=0.75)+theme_bw()+xlab("TF")+ylab("auPR")+scale_fill_manual(values=c("darkgoldenrod3","mediumorchid3"))+theme(axis.text.x=element_text(angle=45, vjust=0.97,hjust= 0.9))
+dev.off()
+```
+
+
+
+## Fig 6C:
+
+```{r, eval=F}
+#REMOVE HOT sites
+unlist_NOT<-subsetByOverlaps(unlist_DLPFC, union_DLPFC[which(union_DLPFC$HOT=="HOT"),], invert=T)
+chip_list<-split(unlist_NOT, ~name)
+chip_list2<-chip_list[keep]
+
+
+df_not<-data.frame(TF="A",Threshold=0,recall=0, precision=0, FPR=0)
+for (i in 1:length(keep)){
+  tmp<-data.frame(TF=rep(keep[i],2), Threshold=rep(-1,2),recall=c(0,1), precision=c(1,0),FPR=c(0,0))
+  for (j in seq(0,0.99,by=0.01)){
+    filtered<-subsetByOverlaps(TF_list2[[i]][which(TF_list2[[i]]$PP>j),],union_DLPFC[which(union_DLPFC$HOT=="HOT"),], invert=T) # take predicted peaks above threshold and also ones not overlapping HOT sites
+    random_n<-length(filtered)
+    random_sample<-sample(TF_list2[[i]], random_n)
+    over<-findOverlaps(filtered, chip_list2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+     FPR= length(filtered[-queryHits(over)]) /
+      (length(TF_list2[[i]][which(TF_list2[[i]]$PP<j),]) +
+         length(filtered[-queryHits(over)]))
+   
+    c<-c(keep[i],j,recall,precision,FPR)
+    tmp<-rbind(tmp,c)
+  }
+  df_not<-rbind(df_not,tmp)
+}
+df_not<-df_not[-1,]
+#base metrics
+df_not$recall<-as.numeric(df_not$recall)
+df_not$precision<-as.numeric(df_not$precision)
+df_not$precision<-ifelse(is.nan(df_not$precision),1,df_not$precision)
+df_not$Threshold<-as.numeric(df_not$Threshold)
+df_not$FPR<-as.numeric(df_not$FPR)
+
+df_not<-df_not[which(df_not$Threshold!=-1),]
+#Get AUC for each TF and add to df_not for plotting [NOTE: AUC is auPR just name variable didn't change]
+df_not$F1<-( df_not$precision*df_not$recall)/(df_not$precision+df_not$recall)
+auc<-c()
+for (i in 1:length(keep)){
+  tmp<-df_not[which(df_not$TF==keep[i] & df_not$Threshold!=-1),]
+  AUC <- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+  auc<-c(auc,AUC)
+}
+auc.df_not<-data.frame(AUC=auc, TF=keep)
+df_not<-merge(df_not,auc.df_not,by="TF")
+df_not$auPR<-paste0(df_not$TF,": ",round(df_not$AUC,3))
+df_not2<-df_not
+df_not2<-df_not2[order(-df_not2$AUC),]
+df_not2$auPR<-factor(df_not2$auPR, levels=unique(df_not2$auPR))
+
+
+write.csv(df_not, "BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR_HOTremoved.csv")
+
+
+auc.df_not$dataset<-"DLPFC without HOT sites"
+auc.df$dataset<-"DLPFC with HOT sites"
+both<-rbind(auc.df, auc.df_not)
+both<-both[order(both$dataset,-both$AUC),]
+both$TF<-factor(both$TF, levels=unique(both$TF))
+pdf("virtualChIP_reanalysis_auPR_HOT_v_not.pdf", width=5,height=4)
+ggplot(both[which(both$TF!="RAD21"),], aes(x=TF, y=AUC, fill=dataset))+geom_bar(stat="identity", position="dodge", width=0.75)+theme_bw()+scale_fill_manual(values=c("red","blue"))+theme(axis.text.x=element_text(angle=90,hjust= 0.9))+ylab("auPR")+ylim(0,1)+theme(legend.position="top")
+dev.off()
+
+```
+
+
+## Fig 6D
+
+```{r, eval=F}
+over<-findOverlaps(unlist_DLPFC, enc)
+unlist_DLPFC$encLabel<-"None"
+unlist_DLPFC[queryHits(over)]$encLabel<-enc[subjectHits(over)]$encodeLabal
+
+names<-c("CTCF-only","dELS","DNase-H3K4me3","pELS","PLS","none")
+log2FE.df<-c()
+for(i in 1:length(keep)){
+  temp<-TF_list2[[i]] #TF_list2 is all predictions. Not filtered
+  temp<-temp[which(temp$PP>0.5),]
+  missing_peaks<-subsetByOverlaps(unlist_DLPFC[which(unlist_DLPFC$name==keep[i]),], temp, invert=T)
+  found_peaks<-subsetByOverlaps(unlist_DLPFC[which(unlist_DLPFC$name==keep[i]),], temp, invert=F)
+  if (length(found_peaks)>0){
+    tab1<-prop.table(table(missing_peaks$encLabel))
+    tab2<-prop.table(table(found_peaks$encLabel))
+    log2FE<-as.data.frame(log2(tab2[names]/tab1[names]))
+    log2FE$TF<-keep[i]
+    log2FE.df<-rbind(log2FE.df, log2FE)
+  }
+}
+
+log2FE.df$Var1<-factor(log2FE.df$Var1, levels=c("PLS","pELS","dELS","CTCF-only","DNase-H3K4me3","none"))
+pdf("ENCODE_enrichments_predicted_TFBS.pdf", width=5, height=4)
+ggplot(log2FE.df[which(is.na(log2FE.df$Var1)==F & log2FE.df$Var1 %in% c("PLS","pELS","dELS","none")),], aes(x=Var1,y=Freq ,fill=Var1))+geom_boxplot()+theme_classic()+geom_jitter(alpha=0.2)+ylab("log2FE")+xlab("ENCODE annotation")+scale_fill_manual(labels= ,values=c("red","orange","gold","grey54"), name="ENCODE annotation")+theme(axis.text.x=element_text(size=5))
+dev.off()
+
+```
+
+
+## Supp Fig 6
+
+```{r, eval=F}
+files=as.list(readLines("TFBS_prediction/virtChip/sort/ALL_sorted_predictions.txt"))
+n=sapply(strsplit(unlist(files),"[/]"),"[[",9)
+n2=sapply(strsplit(n,"[_]"),"[[",1)
+group=sapply(strsplit(n,"[_]"),"[[",2)
+SORT_list=lapply(files,function(x){
+  SORT=read.table(x)
+  SORT=GRanges(SORT)
+    })
+names(SORT_list)=n2
+colnames(mcols(SORT_list[[1]]))<-"PP"
+
+for(i in 2:length(SORT_list)){
+  colnames(mcols(SORT_list[[i]]))<-"PP"}
+
+```
+
+### NEUN
+
+```{r, eval=F}
+NEUN_list<-SORT_list[which(group=="NeuN")]
+n3<-n2[which(group=="NeuN")]
+
+
+NEUN2<-lapply(NEUN_list, function(x){
+  subsetByOverlaps(x, HOT,invert=T)
+})
+
+
+
+files=as.list(readLines("SortedChIPseq.txt"))
+m=sapply(strsplit(unlist(files),"[/]"),"[[",7)
+m2=sapply(strsplit(m,"[_]"),"[[",1)
+m2<-ifelse(m2=="NRSF","REST",m2)
+chip_sort=lapply(files,function(x){
+  chip=import(x,format="bed",extraCols=extraCols_narrowPeak) })
+names(chip_sort)=m2
+chip_sort2<-lapply(chip_sort, function(x){
+  subsetByOverlaps(x, HOT,invert=T)
+})
+
+
+
+#only keep ones that have both virChip prediction and actual data
+keep<-n3[which(n3 %in% m2)]
+chip_sort2<-chip_sort2[keep]
+NEUN_list2<-NEUN2[keep]
+
+
+df<-data.frame(TF="A",Threshold=0,recall=0, precision=0, FPR=0, recall.random=0,precision.random=0)
+for (i in 1:length(keep)){
+  for (j in seq(0,0.99,by=0.01)){
+    filtered<-NEUN_list2[[i]][which(NEUN_list2[[i]]$PP>j),]
+    random_n<-length(filtered)
+    random_sample<-sample(NEUN_list2[[i]], random_n)
+    over<-findOverlaps(filtered, chip_sort2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+     FPR= length(filtered[-queryHits(over)]) /
+      (length(NEUN_list2[[i]][which(NEUN_list2[[i]]$PP<j),]) +
+         length(filtered[-queryHits(over)]))
+     
+    over<-findOverlaps(random_sample, chip_sort2[[i]])
+    recall.random=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
+    precision.random= length(unique(queryHits(over))) / length(random_sample)
+    
+    c<-c(keep[i],j,recall,precision,FPR, recall.random, precision.random)
+    df<-rbind(df,c)
+  }
+}
+df<-df[-1,]
+#base metrics
+df$recall<-as.numeric(df$recall)
+df$precision<-as.numeric(df$precision)
+df$precision<-ifelse(is.nan(df$precision),1,df$precision)
+df$Threshold<-as.numeric(df$Threshold)
+df$FPR<-as.numeric(df$FPR)
+df$precision.random<-as.numeric(df$precision.random)
+df$recall.random<-as.numeric(df$recall.random)
+
+df<-df[which(df$Threshold!=-1),]
+#Get AUC for each TF and add to df for plotting
+df$F1<-( df$precision*df$recall)/(df$precision+df$recall)
+auc<-c()
+for (i in 1:length(keep)){
+tmp<-df[which(df$TF==keep[i] & df$Threshold!=-1),]
+AUC <- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+auc<-c(auc,AUC)
+}
+auc.df<-data.frame(AUC=auc, TF=keep)
+df<-merge(df,auc.df,by="TF")
+df$auPR<-paste0(df$TF,": ",round(df$AUC,3))
+df2<-df
+df2<-df2[order(-df2$AUC),]
+df2$auPR<-factor(df2$auPR, levels=unique(df2$auPR))
+
+
+
+
+
+write.csv(df, "BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_sort.csv")
+
+```
+
+### OLIG
+
+```{r, eval=F}
+SORT_list<-readRDS("TFBS_prediction/analysis/Entire_sorted_granges.rds")
+n2<-names(SORT_list)
+Olig_list<-SORT_list[seq(2,length(SORT_list), by=2)]
+n3<-n2[seq(2,length(SORT_list), by=2)]
+
+
+
+
+files2=as.list(readLines("TFBS_prediction/sort_olig_BrainTF.txt"))
+m=sapply(strsplit(unlist(files2),"[/]"),"[[",8)
+m2=sapply(strsplit(m,"[.]"),"[[",1)
+m2<-ifelse(m2=="NRSF","REST",m2)
+m2[1]<-"BHLHE40"
+chip_sort=lapply(files2,function(x){
+  chip=read.table(x,sep="\t") 
+  colnames(chip)[1:3]<-c("seqnames","start","end")
+  })
+names(chip_sort)=m2
+for ( i in 1:length(chip_sort)){
+  colnames(chip_sort[[i]])[1:3]<-c("seqnames","start","end")
+  chip_sort[[i]]<-GRanges(chip_sort[[i]])
+}
+
+
+keep<-n3[which(n3 %in% m2)]
+chip_sort2<-chip_sort[keep]
+Olig_list2<-Olig_list[keep]
+
+
+df<-data.frame(TF="A",Threshold=0,recall=0, precision=0, FPR=0, recall.random=0,precision.random=0)
+for (i in 1:length(keep)){
+  for (j in seq(0,0.99,by=0.01)){
+    filtered<-Olig_list2[[i]][which(Olig_list2[[i]]$PP>j),]
+    random_n<-length(filtered)
+    random_sample<-sample(Olig_list2[[i]], random_n)
+    over<-findOverlaps(filtered, chip_sort2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+     FPR= length(filtered[-queryHits(over)]) /
+      (length(Olig_list2[[i]][which(Olig_list2[[i]]$PP<j),]) +
+         length(filtered[-queryHits(over)]))
+     
+    over<-findOverlaps(random_sample, chip_sort2[[i]])
+    recall.random=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
+    precision.random= length(unique(queryHits(over))) / length(random_sample)
+    
+    c<-c(keep[i],j,recall,precision,FPR, recall.random, precision.random)
+    df<-rbind(df,c)
+  }
+}
+df<-df[-1,]
+#base metrics
+df$recall<-as.numeric(df$recall)
+df$precision<-as.numeric(df$precision)
+df$precision<-ifelse(is.nan(df$precision),1,df$precision)
+df$Threshold<-as.numeric(df$Threshold)
+df$FPR<-as.numeric(df$FPR)
+df$precision.random<-as.numeric(df$precision.random)
+df$recall.random<-as.numeric(df$recall.random)
+
+df<-df[which(df$Threshold!=-1),]
+#Get AUC for each TF and add to df for plotting
+df$F1<-( df$precision*df$recall)/(df$precision+df$recall)
+auc<-c()
+for (i in 1:length(keep)){
+tmp<-df[which(df$TF==keep[i] & df$Threshold!=-1),]
+AUC <- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+auc<-c(auc,AUC)
+}
+auc.df<-data.frame(AUC=auc, TF=keep)
+df<-merge(df,auc.df,by="TF")
+df$auPR<-paste0(df$TF,": ",round(df$AUC,3))
+df2<-df
+df2<-df2[order(-df2$AUC),]
+df2$auPR<-factor(df2$auPR, levels=unique(df2$auPR))
+
+
+
+
+
+write.csv(df, "BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_Olig.csv")
+tmp<-read.csv("BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_sort.csv") #this is actually NeuN
+tmp<-tmp[!duplicated(tmp$TF),]
+tmp<-tmp[,c(10,2)]
+tmp$ct<-"NEUN"
+auc.df$ct<-"OLIG"
+al<-rbind(tmp, auc.df)
+al<-al[order(-al$AUC),]
+al$TF<-factor(al$TF, levels=unique(al$TF))
+
+
+bulk<-read.csv("TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR.csv")
+bulk<-bulk[!duplicated(bulk$TF),]
+bulk<-bulk[,c(8,2)]
+bulk$ct<-"BULK"
+al2<-rbind(al,bulk)
+al2<-al2[which(al2$TF %in% al$TF),]
+pdf("TFBS_prediction/plots/virChIP_auPR_OLIG_v_NEUN_v_BULK.pdf", width=4, height=4)
+ggplot(al2, aes(x=TF,y=AUC, shape=ct, color=ct))+geom_point()+theme_classic()+guides(shape="none")+theme(axis.text.x=element_text(angle=90))+ylab("auPR")+ylim(0,1)+scale_color_manual(values=c("goldenrod1","cornflowerblue","seagreen3"))
+dev.off()
+
+```
+
+
+
+# Figure 7: Association of DAPs with dease through GWAS traits
+## LDSC
+sbatch_LDSC16.sh
+
+```{bash, eval=F}
+#!/bin/bash
+## This is to submit LDSC analysis of chr1-22 for list of bedfiles
+## need input directory for bed files
+## need output dir for annot and estiamtes
+## need chr numbers 1-22
+## need input dir for bim file (will increase chr1 by increments in loop)
+set -e
+set -u
+
+PROGRAM=$(basename $0)
+
+echo -e "\nYou have initialized $PROGRAM, beginning to run...\n"
+
+usage() {
+
+    echo "$PROGRAM USAGE:"
+    echo -e "$PROGRAM -d input_bed -o output_dir -b bim_dir\n"
+    echo -e "\t\t-d input\tThe bed input text file full path"
+    echo -e "\t\t-o output_dir\tThe output directory full path"
+    echo -e "\t\t-b bim_dir\tThe bim directory full path"
+    echo -e "\t\t-g gwas\tThe gwas directory full path"
+}
+
+if [[ $# -lt 5 ]]; then
+    echo "ERROR: Not enough parameters"
+    usage
+    exit -1
+fi
+
+INPUT_BED=""
+OUTPUT_DIR=""
+BIM_DIR=""
+GWAS=""
+
+while getopts ":d:o:b:g:" optname
+  do
+  case "$optname" in
+      "d")
+          INPUT_BED=$OPTARG
+          ;;
+      "o")
+          OUTPUT_DIR=$OPTARG
+          ;;
+      "b")
+                BIM_DIR=$OPTARG
+          ;;
+      "g")
+          GWAS=$OPTARG
+          ;;
+      "?")
+          echo "ERROR: Unknown option $OPTARG"
+          exit -1
+          ;;
+      ":")
+          echo "ERROR: No argument value for option $OPTARG"
+          exit -1
+          ;;
+      *)
+          # Should not occur
+          echo"ERROR: Unknown error while processing options"
+          exit -1
+          ;;
+  esac
+done
+
+echo -e "Your input parameters are:"
+echo -e "INPUT_BED is:\t$INPUT_BED"
+echo -e "OUTPUT_DIR is:\t$OUTPUT_DIR"
+echo -e "BIM_DIR is:\t$BIM_DIR"
+echo -e "GWAS is:\t$GWAS"
+declare -a BEDFILE
+
+for BED in $(ls ${INPUT_BED}/*.bed); do
+    BEDFILE[${#BEDFILE[@]}+1]=$(echo "${BED}")
+done
+
+echo -e "BED is:\t$BED"
+
+
+cd $OUTPUT_DIR
+
+for (( i=1; i<=${#BEDFILE[@]}; i++ ))
+do
+samp=`basename ${BEDFILE[i]} | cut -d "." -f1`
+echo -e "SAMP is:\t$samp"
+
+sbatch -J annot_${samp} -c 12 -N 1 -o /annot_${samp}_output.logs.txt LDSC_Analysis16.sh ${BEDFILE[i]} ${INPUT_BED} ${OUTPUT_DIR} ${BIM_DIR} ${samp} ${GWAS}
+
+done
+```
+
+LDSC_Analysis16.sh
+
+```{bash, eval=F}
+#!/bin/bash
+
+export MKL_NUM_THREADS=8
+
+BED=$1
+#BIMFILE=$2
+INPUT_BED=$2
+OUTPUT_DIR=$3
+BIM_DIR=$4
+samp=$5
+#CHR=$7
+GWAS=$6
+
+study=`basename ${GWAS} | cut -d "." -f1`
+RESULTS_DIR="20230324_AD_variants_overlap_Phanstiel_data_PMID36323252/LDSC_analysis/LDSC_results/"
+
+for CHR in {1..22};do
+BIMFILE=${BIM_DIR}/1000G.EUR.hg38.${CHR}.bim
+
+python LDscore/scripts/make_annot.py --bed-file ${BED} --bimfile ${BIMFILE} --annot-file ${OUTPUT_DIR}/${samp}.${CHR}.annot.gz &>tmp/${samp}.${CHR}.annotlog
+
+
+
+python LDscore/scripts/ldsc.py --l2 --bfile ${BIM_DIR}/1000G.EUR.hg38.${CHR} --ld-wind-cm 1 --annot ${OUTPUT_DIR}/${samp}.${CHR}.annot.gz --thin-annot --out ${OUTPUT_DIR}/${samp}.${CHR} \
+--print-snps LDscore/1000G_EUR_Phase3_baseline/print_snps.txt &>tmp/${samp}.${CHR}.ldsclog
+done
+
+
+python LDscore/scripts/ldsc.py --h2 ${GWAS} --w-ld-chr LDscore/LDscore_GRCh38/weights/weights.hm3_noMHC. --ref-ld-chr ${OUTPUT_DIR}/${samp}.,LDscore/LDscore_GRCh38/baselineLD_v2.2/baselineLD. --overlap-annot --frqfile-chr LDscore/1000G_Phase3_frq/1000G.EUR.QC. --out ${RESULTS_DIR}/${samp}_${study}.GWAS --print-coefficients &>tmp/${samp}.baseline.ldsclog
+
+```
+
+
+## Fig 7C
+
+```{r, eval=F}
+
+library(Signac)
+library(RcppRoll)
+library(ggforce)
+library(fastmatch)
+source("BigwigTrack.R")
+source("Bed_PeakPlot.R")
+source("plotGWAS.R")
+source("plotLink.R")
+source("plot_dependencies_GenePlot.R")
+source("Bed_GWASPlot.R")
+anno <- readRDS("BrainTF/GeneAnnotations.rds") # big! remove when done
+
+#FORMAT GWAS
+tab<-read.table("GWAS_PGC3_SCZ_wave3.european.autosome.public.v3_FORMAT.tsv", header=T)
+tab$PVAL<-as.numeric(tab$PVAL)
+tab2<-tab
+tab2$start<-tab2$POS
+tab2$end<-as.numeric(tab2$start)+1
+tab2$CHROM<-paste0("chr",tab2$CHROM)
+gwas<-GRanges(tab2)
+ch<-import.chain("liftover/hg19ToHg38.over.chain")
+gwas<-liftOver(gwas, ch)
+gwas<-unlist(gwas)  
+gwas$P<-gwas$PVAL
+
+
+# LOAD PEAKS
+union_DLPFC_NEUN<-readRDS("union_DLPFC_NEUN.rds")
+over<-findOverlaps(gwas, union_DLPFC_NEUN)  #add highlight for snps in peaks
+gwas$olap<-F
+gwas[queryHits(over)]$olap=T
+gwas$highlight<-ifelse(gwas$P<1e-8 & gwas$olap==T, T, F)
+
+
+# read in multi data to get gene annotation track. 
+
+# FORMAT LINKS
+links<-read.csv("scAnalysis/RINdrop/TableS5_Links.csv")
+links<-GRanges(links)
+
+
+#can I make a GRange for eQTLs
+eqtl <- read.table("scAnalysis/lit_search_validation/Brain_Frontal_Cortex_BA9.v8.egenes.txt", header=T, fill = TRUE)
+eqtl$variant_end <- eqtl$variant_pos+100
+eqtl <- makeGRangesFromDataFrame(eqtl,keep.extra.columns=TRUE,seqnames.field="chr",start.field="variant_pos",end.field="variant_end")
+
+
+library(motifmatchr)
+library(BSgenome)
+# make GRx of motifs for specificly PKNOX1
+pfm2_dups <- readRDS( "BrainTF/Filtered_PFM.rds")
+motif_pos_PKNOX1 <- matchMotifs(pfm2_dups$PKNOX1,union_DLPFC_NEUN, genome = "hg38",  out="positions")
+
+
+
+
+
+
+
+
+#PLOT
+
+
+# interesting ones overlaps
+candidates <-readRDS("BrainTF/links_olap_PKNOX1_gwas_snps.noOlap_ATAC.rds") 
+write.table(candidates,"candidates.bed", sep = "\t", quote = FALSE, row.names=FALSE, col.names = F)
+
+
+#tsnare
+region<-GRanges("chr8:142143920-142646883")
+region_zoom <- GRanges("chr8:142194670-142233241")
+
+
+
+peak<-region_zoom #subset links to only links that overlap the snp you are interested in 
+links2<-subsetByOverlaps(links, peak) #subset links to only links that overlap the snp you are interested in 
+signac_form<-as.data.frame(links2)[,-c(1,2,3)]
+colnames(signac_form)[c(19,20,21)]<-c("seqnames","start","end")
+signac_form$seqnames<-paste0("chr",signac_form$seqnames)
+signac_form$score<-ifelse(signac_form$group=="common", (signac_form$score.x+ signac_form$score.y)/2, 
+                          ifelse(signac_form$group=="Ctrl",signac_form$score.y, signac_form$score.x))
+signac.gr<-GRanges(signac_form)
+signac.gr$group2<-ifelse(signac.gr$group=="Ctrl",0,
+                         ifelse(signac.gr$group=="AD", 2, 1))
+
+
+p1 <- BigwigTrack(region_zoom,smooth = 100,bigwig=
+"ATAC/cromwell_output/signal/pooled-rep/1238_1242_DLPFC_NeuN_basename_prefix.pooled.pval.signal.bigwig")+
+  theme(axis.text=element_blank(), axis.ticks=element_blank(), legend.position="none") + xlab("")+scale_fill_manual(values="forestgreen")+ylab("NEUN ATAC")
+p2 <- BigwigTrack(region_zoom,smooth = 100,bigwig= "PKNOX1_DLPFC-NEUN_Output/signal/pooled-rep/basename_prefix.pooled_x_basename_prefix.pooled.pval.signal.bigwig")+
+  theme(axis.text=element_blank(), axis.ticks=element_blank(), legend.position="none") + xlab("")+scale_fill_manual(values="blue")+ylab("NEUN PKNOX1") #+ylim(0,50)
+
+ap <- Bed_PeakPlot(list_ATAC$DLPFC_NeuN, region_zoom) + ylab("ATAC peak")
+
+PKNOX_unlist <- unlist_DLPFC_NEUN[which(names(unlist_DLPFC_NEUN)=="PKNOX1_DLPFC-NEUN"),]
+names(PKNOX_unlist) <- c(1:length(PKNOX_unlist)) 
+
+np <- Bed_PeakPlot(PKNOX_unlist, region_zoom) + ylab("PKNOX peak")
+
+
+q1 <- Bed_GWASPlot(eqtl, region_zoom)+ylab("eQTL")
+q2 <- Bed_GWASPlot(eqtl, region)+ylab("eQTL")
+
+l<-LinkPlot.height(signac.gr, region,min.cutoff= -0.5, max.cutoff=0.5) + ylab("Score")
+l2 <- Bed_PeakPlot(links, region_zoom) + ylab("links")
+
+over<-findOverlaps(gwas, union_DLPFC_NEUN) #subset of union_DLPFC-NEUN overlapping with GWAS
+gwas$highlight<-F
+gwas$highlight[queryHits(over)]<-T
+m1<-Manhattan_GWASPlot(gwas, region_zoom, group.by=T)+theme(legend.position="none")
+m2<-Manhattan_GWASPlot(gwas, region)+theme(legend.position="none") #group.by=T
+
+g1<-AnnotationPlot(anno, region_zoom)
+g2<-AnnotationPlot(anno, region)
+
+Mx <- Bed_GWASPlot(motif_pos_PKNOX1, region_zoom)+ylab("PKNOX motif")
+
+plot_zoom<-CombineTracks(plotlist=list(p1,ap,p2,np,l2,m1,g1), heights=c(2,1,2,1,1))
+plot_wide<-CombineTracks(plotlist=list(l,m2,g2), heights=c(2,1,2))
+
+
+pdf("test.pdf")
+plot_zoom
+plot_wide
+dev.off()
+
+
+pdf(paste0("browsertracks_GWAS_PKNOX1.pdf"), width=6.5, height=6.5 )
+plot_zoom
+plot_wide
+dev.off()
+
+```
+
