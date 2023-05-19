@@ -1,8 +1,7 @@
 # Loupe_BrainTF
 
-#### To view all analyses click [here](https://aanderson54.github.io/Loupe_BrainTF/)
 
-
+This repository contains all code generated for Loupe et al. 2023 (click [here](https://aanderson54.github.io/Loupe_BrainTF/) to view code). 
 
 
 ##### Abstract
