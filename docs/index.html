@@ -226,7 +226,20 @@ pre code {
 <li><a href="#supp-fig-encode">Supp Fig: ENCODE</a></li>
 </ul></li>
 </ul></li>
-<li><a href="#figure-5-correlating-dap-binding-with-gene-expression-and-chromatin-accessibility.">Figure 5: Correlating DAP binding with gene expression and chromatin accessibility.</a>
+<li><a href="#figure-5-comparison-of-chip-seq-results-with-predictive-models.">Figure 5: Comparison of ChIP-seq results with predictive models.</a>
+<ul>
+<li><a href="#virtual-chip-seq-predictions">Virtual ChIP-seq predictions</a></li>
+<li><a href="#fig-6a">Fig 6A:</a></li>
+<li><a href="#fig-6b">Fig 6B:</a></li>
+<li><a href="#fig-6c">Fig 6C:</a></li>
+<li><a href="#fig-6d">Fig 6D</a></li>
+<li><a href="#supp-fig-6">Supp Fig 6</a>
+<ul>
+<li><a href="#neun">NEUN</a></li>
+<li><a href="#olig">OLIG</a></li>
+</ul></li>
+</ul></li>
+<li><a href="#figure-6-correlating-dap-binding-with-gene-expression-and-chromatin-accessibility.">Figure 6: Correlating DAP binding with gene expression and chromatin accessibility.</a>
 <ul>
 <li><a href="#fig-5a-heatmap">Fig 5A: Heatmap</a></li>
 <li><a href="#fig-5b-atac-signal-vs-expression">Fig 5B: ATAC signal vs expression</a></li>
@@ -244,19 +257,6 @@ pre code {
 <li><a href="#fig-s5c">Fig S5C</a></li>
 <li><a href="#fig-s5d">Fig S5D</a></li>
 <li><a href="#fig-s5e">Fig S5E</a></li>
-</ul></li>
-<li><a href="#figure-6-comparison-of-chip-seq-results-with-predictive-models.">Figure 6: Comparison of ChIP-seq results with predictive models.</a>
-<ul>
-<li><a href="#virtual-chip-seq-predictions">Virtual ChIP-seq predictions</a></li>
-<li><a href="#fig-6a">Fig 6A:</a></li>
-<li><a href="#fig-6b">Fig 6B:</a></li>
-<li><a href="#fig-6c">Fig 6C:</a></li>
-<li><a href="#fig-6d">Fig 6D</a></li>
-<li><a href="#supp-fig-6">Supp Fig 6</a>
-<ul>
-<li><a href="#neun">NEUN</a></li>
-<li><a href="#olig">OLIG</a></li>
-</ul></li>
 </ul></li>
 <li><a href="#figure-7-association-of-daps-with-dease-through-gwas-traits">Figure 7: Association of DAPs with dease through GWAS traits</a>
 <ul>
@@ -2202,8 +2202,557 @@ dev.off()</code></pre>
 </div>
 </div>
 </div>
-<div id="figure-5-correlating-dap-binding-with-gene-expression-and-chromatin-accessibility." class="section level1">
-<h1>Figure 5: Correlating DAP binding with gene expression and chromatin accessibility.</h1>
+<div id="figure-5-comparison-of-chip-seq-results-with-predictive-models." class="section level1">
+<h1>Figure 5: Comparison of ChIP-seq results with predictive models.</h1>
+<div id="virtual-chip-seq-predictions" class="section level2">
+<h2>Virtual ChIP-seq predictions</h2>
+<p>ran script for each predicted TF and for BULK, NEUN, and OLIG</p>
+<pre class="bash"><code>#!/bin/bash
+
+#BULK
+#RNA=TFBS_prediction/virtChip/Bulk_avgAcrossDLPFC_RNA.tsv.gz
+#SORTED
+RNA=TFBS_prediction/virtChip/Sorted_avgAcrossDLPFC_RNA.tsv.gz
+
+#NeuN
+ATAC=ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_NeuN_idr.optimal_peak.narrowPeak.gz
+#Olig
+#ATAC=ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_Olig2_idr.optimal_peak.narrowPeak.gz
+#Bulk
+#ATAC=1224_1230_bulk_atac_bio-rep/atac/89e798c6-aef4-4137-98b0-696968d30c56/call-idr/shard-0/execution/rep1_vs_rep2.idr0.05.bfilt.narrowPeak.gz
+
+TF=$1
+CT=$2
+
+python virchip/virchip/make_input.py ${TF} sort/${TF}_${CT}_complete.tsv.gz     data/chipExpDir/${TF} \
+        $RNA data/RefTablesSummary \
+        --rna-cell $CT \
+        --blacklist_path data/hg38_EncodeBlackListedRegions_200bpBins.bed.gz \
+        --bin_size 200 --merge-chips\
+        --chromsize-path data/hg38_chrsize.tsv \
+        --dnase-path $ATAC
+
+
+python virchip/virchip/predict.py data/virchipModels sort/${TF}_${CT}_complete.tsv.gz \
+        sort/${TF}_${CT}_predictions.tsv.gz ${TF}
+</code></pre>
+</div>
+<div id="fig-6a" class="section level2">
+<h2>Fig 6A:</h2>
+<pre class="r"><code>files=as.list(readLines(&quot;BrainTF/TFBS_prediction/virtChip/out/ALL_predictions.tsv&quot;))
+files&lt;-files[grepl(&quot;predictions&quot;,files)]
+n=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,10)
+n2=sapply(strsplit(n,&quot;[_]&quot;),&quot;[[&quot;,1)
+TF_list=lapply(files,function(x){
+  TF=read.table(x)
+  TF=GRanges(TF)
+    })
+names(TF_list)=n2
+colnames(mcols(TF_list[[1]]))&lt;-&quot;PP&quot;
+for(i in 2:48){
+  colnames(mcols(TF_list[[i]]))&lt;-&quot;PP&quot;}
+unlist&lt;-as.data.frame(TF_list[[1]])
+for(i in 2:42){
+  unlist&lt;-rbind(unlist, as.data.frame(TF_list[[i]]))
+}
+unlist$peak&lt;-rownames(unlist)
+unlist&lt;-GRanges(unlist[!duplicated(unlist$peak),])
+
+
+unlist_DLPFC&lt;-readRDS(&quot;unlist_DLPFC.rds&quot;)
+unlist_DLPFC$name&lt;-ifelse(unlist_DLPFC$name==&quot;NRSF&quot;,&quot;REST&quot;,ifelse(unlist_DLPFC$name==&quot;SREBP2&quot;,&quot;SREBF2&quot;, 
+                       ifelse(unlist_DLPFC$name==&quot;CREB&quot;,&quot;CREB1&quot;,unlist_DLPFC$name)))
+m2&lt;-unique(unlist_DLPFC$name)
+chip_list&lt;-split(unlist_DLPFC, ~name)
+#only keep ones that have both virChip prediction and actual data
+keep&lt;-n2[which(n2 %in% m2)]
+chip_list2&lt;-chip_list[keep]
+TF_list2&lt;-TF_list[keep]
+
+
+df&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0)
+for (i in 1:length(keep)){
+  tmp&lt;-data.frame(TF=rep(keep[i],2), Threshold=rep(-1,2),recall=c(0,1), precision=c(1,0),FPR=c(0,0),recall.random=c(0,1), precision.random=c(1,0))
+  for (j in seq(0,0.99,by=0.01)){
+    filtered&lt;-TF_list2[[i]][which(TF_list2[[i]]$PP&gt;j),]
+    over&lt;-findOverlaps(filtered, chip_list2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+     FPR= length(filtered[-queryHits(over)]) /
+      (length(TF_list2[[i]][which(TF_list2[[i]]$PP&lt;j),]) +
+         length(filtered[-queryHits(over)]))
+
+    c&lt;-c(keep[i],j,recall,precision,FPR)
+    tmp&lt;-rbind(tmp,c)
+  }
+  df&lt;-rbind(df,tmp)
+}
+df&lt;-df[-1,]
+#base metrics
+df$recall&lt;-as.numeric(df$recall)
+df$precision&lt;-as.numeric(df$precision)
+df$precision&lt;-ifelse(is.nan(df$precision),1,df$precision)
+df$Threshold&lt;-as.numeric(df$Threshold)
+df$FPR&lt;-as.numeric(df$FPR)
+
+df&lt;-df[which(df$Threshold!=-1),]
+#Get auPR for each TF and add to df for plotting [NOTE: AUC is auPR just name variable didn&#39;t change]
+df$F1&lt;-( df$precision*df$recall)/(df$precision+df$recall)
+auc&lt;-c()
+for (i in 1:length(keep)){
+  tmp&lt;-df[which(df$TF==keep[i] &amp; df$Threshold!=-1),]
+  AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+  auc&lt;-c(auc,AUC)
+}
+auc.df&lt;-data.frame(AUC=auc, TF=keep)
+df&lt;-merge(df,auc.df,by=&quot;TF&quot;)
+df$auPR&lt;-paste0(df$TF,&quot;: &quot;,round(df$AUC,3))
+df2&lt;-df
+df2&lt;-df2[order(-df2$AUC),]
+df2$auPR&lt;-factor(df2$auPR, levels=unique(df2$auPR))
+
+
+
+write.csv(df, &quot;BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv&quot;)
+
+
+
+
+atac&lt;-import(&quot;1224_1230_bulk_atac_bio-rep/atac/89e798c6-aef4-4137-98b0-696968d30c56/call-idr/shard-0/execution/rep1_vs_rep2.idr0.05.bfilt.narrowPeak.gz&quot;)
+library(TFBSTools)
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+ pfm2_dups&lt;-readRDS( &quot;BrainTF/Filtered_PFM.rds&quot;)
+
+  #match motifs
+  motif_pos&lt;-matchMotifs(pfm2_dups,atac, genome = BSgenome.Hsapiens.UCSC.hg38,  out=&quot;positions&quot;)
+
+motif_pos2&lt;-motif_pos[keep] #keep is from reanalysis section. TFs in plot
+
+
+#this gives you TFBS predictions for each tf by just saying any atac peak with the corresponding motif is predicted
+motifs&lt;-list()
+for (i in 1:length(keep)){
+  sp1.motifs&lt;-unique(unlist(motif_pos[grepl(keep[i], toupper(names(motif_pos)))]))
+  if (length(sp1.motifs)&gt;0){
+    sp1.motifs$pos&lt;-paste0(seqnames(sp1.motifs),&quot;:&quot;,start(sp1.motifs),&quot;-&quot;,end(sp1.motifs))
+    #find overlaps with original peak list
+    over&lt;-findOverlaps(atac,sp1.motifs)
+    atac.overlap&lt;-atac[unique(queryHits(over))] #I uniqued to get proportion with motifs but change at this step to get motif position
+    motifs[[i]]&lt;-atac.overlap
+  }
+  else {
+    motifs[[i]]&lt;-sp1.motifs
+  }
+}
+names(motifs)&lt;-keep
+
+#calculate precision and recall for this method
+mf&lt;-data.frame(TF=&quot;A&quot;,precision=0,recall=0)
+for (i in 1:length(keep)){
+  over&lt;-findOverlaps(motifs[[i]], chip_list2[[i]])
+  p&lt;-length(unique(queryHits(over)))/length(motifs[[i]])
+  r&lt;-length(unique(subjectHits(over)))/length(chip_list2[[i]])
+  c&lt;-c(keep[i],p,r)
+  mf&lt;-rbind(mf, c)
+}
+mf2&lt;-mf
+mf2$recall&lt;-as.numeric(mf2$recall)
+mf2$precision&lt;-as.numeric(mf2$precision)
+
+
+#load back in virtual ChIP-seq predictions to plot
+virt&lt;-read.csv(&quot;BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv&quot;)
+virt.df&lt;-merge(mf2,virt,by=&quot;TF&quot;, all.y=T)
+
+pdf(&quot;virtChIP_v_motif_rerun.pdf&quot;, width=8,height=6)
+ggplot(virt.df[which(virt.df$recall.y!=0 &amp; virt.df$precision.y !=1 &amp; virt.df$TF!=&quot;RAD21&quot;),])+geom_line(aes(x=recall.y, y=precision.y))+geom_point(aes(x=recall.x, y=precision.x), shape=8, color=&quot;red&quot;)+theme_classic()+facet_wrap(~TF)+ylab(&quot;precision&quot;)+xlab(&quot;recall&quot;)
+dev.off()</code></pre>
+</div>
+<div id="fig-6b" class="section level2">
+<h2>Fig 6B:</h2>
+<pre class="r"><code>files=as.list(readLines(&quot;BrainTF/TFBS_prediction/encode_data/ALL_predictions.txt&quot;))
+n=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,10)
+n2=sapply(strsplit(n,&quot;[_]&quot;),&quot;[[&quot;,1)
+TF_list=lapply(files,function(x){
+  TF=read.table(x)
+  TF=GRanges(TF)
+    })
+names(TF_list)=n2
+colnames(mcols(TF_list[[1]]))&lt;-&quot;PP&quot;
+tf_unlist&lt;-TF_list[[1]]
+for(i in 2:length(TF_list)){
+  colnames(mcols(TF_list[[i]]))&lt;-&quot;PP&quot;
+  tf_unlist&lt;-c( tf_unlist,TF_list[[i]])}
+
+#add in chipseq idr peaks
+files=as.list(readLines(&quot;BrainTF/TFBS_prediction/encode_data/ENCODE_chip.txt&quot;))
+m=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,10)
+m2=sapply(strsplit(m,&quot;[.]&quot;),&quot;[[&quot;,1)
+m2&lt;-ifelse(m2==&quot;NRSF&quot;,&quot;REST&quot;,m2)
+chip_list=lapply(files,function(x){
+  chip=import(x,format=&quot;bb&quot;)}) 
+names(chip_list)=m2
+
+#only keep ones that have both virChip prediction and actual data
+keep2&lt;-n2[which(n2 %in% m2)]
+chip_list2&lt;-chip_list[keep2]
+ENC_TF_list2&lt;-TF_list[keep2]
+
+
+en&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0)
+for (i in 1:length(keep2)){
+  for (j in seq(0,0.99,by=0.01)){
+    filtered&lt;-ENC_TF_list2[[i]][which(ENC_TF_list2[[i]]$PP&gt;j),]
+    over&lt;-findOverlaps(filtered, chip_list2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+    FPR= length(filtered[-queryHits(over)]) / (length(ENC_TF_list2[[i]][which(ENC_TF_list2[[i]]$PP&lt;j),]) + length(filtered[-queryHits(over)])) #FP is ones called positive at filter/ all virtChip-TP
+    c&lt;-c(keep2[i],j,recall,precision,FPR)
+    en&lt;-rbind(en,c)
+  }
+}
+en&lt;-en[-1,]
+#basis metrics
+en$recall&lt;-as.numeric(en$recall)
+en$precision&lt;-as.numeric(en$precision)
+en$precision&lt;-ifelse(is.nan(en$precision),1,en$precision)
+en$Threshold&lt;-as.numeric(en$Threshold)
+en$FPR&lt;-as.numeric(en$FPR)
+
+#add auPR stat
+en$F1&lt;-( en$precision*en$recall)/(en$precision+en$recall)
+auc&lt;-c()
+for (i in 1:length(keep2)){
+tmp&lt;-en[which(en$TF==keep2[i]),]
+AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+auc&lt;-c(auc,AUC)
+}
+auc.en&lt;-data.frame(AUC=auc, TF=keep)
+auc.en$dataset&lt;-&quot;ENCODE&quot;
+auc.df$dataset&lt;-&quot;BrainTF&quot;
+auc.df&lt;-auc.df[which(auc.df$TF %in% keep),]  #format bulk aupr to match
+auc&lt;-rbind(auc.df, auc.en)
+auc&lt;-auc[order(auc$AUC,decreasing = T),]
+auc$TF&lt;-factor(auc$TF, levels=unique(auc$TF))
+pdf(&quot;TFBS_prediction/plots/encode_v_BrainTF_virtualChipseq_batch2.pdf&quot;, width=4,height=3)
+ggplot(auc, aes(x=TF,y=AUC,color=as.factor(TF), shape=dataset))+geom_point(size=2)+theme_bw()+ylim(0,1)+theme( axis.text.x=element_text(angle=90))+guides(color=&quot;none&quot;)+ylab(&quot;auPR&quot;)+ggtitle(&quot;auPR virtual ChIPseq&quot;)
+dev.off()
+
+write.csv(en, &quot;BrainTF/TFBS_prediction/analysis/virtualChIP_onENCODE_auPR_batch2.csv&quot;)
+
+
+
+
+# load in predictions from BrainTF to plot together
+btf&lt;-read.csv(&quot;BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv&quot;)
+btf&lt;-btf[!duplicated(btf$TF),]
+both&lt;-merge(btf, auc.en, by=&quot;TF&quot;)
+both.m&lt;-melt(both[,c(1,10,12)], id.vars=&quot;TF&quot;)
+both.m$dataset&lt;-ifelse(both.m$variable==&quot;AUC.x&quot;, &quot;BrainTF&quot;,&quot;ENCODE&quot;)
+both.m&lt;-both.m[order(both.m$variable, both.m$value, decreasing=T),]
+both.m$TF&lt;-factor(both.m$TF, levels=unique(both.m$TF))
+pdf(&quot;VirtualChIP_BrainTF_vs_ENCODE_added.pdf&quot;, width=5,height=3)
+ggplot(both.m, aes(x=TF, y=value, fill=dataset))+geom_bar(stat=&quot;identity&quot;, position=&quot;dodge&quot;, width=0.75)+theme_bw()+xlab(&quot;TF&quot;)+ylab(&quot;auPR&quot;)+scale_fill_manual(values=c(&quot;darkgoldenrod3&quot;,&quot;mediumorchid3&quot;))+theme(axis.text.x=element_text(angle=45, vjust=0.97,hjust= 0.9))
+dev.off()</code></pre>
+</div>
+<div id="fig-6c" class="section level2">
+<h2>Fig 6C:</h2>
+<pre class="r"><code>#REMOVE HOT sites
+unlist_NOT&lt;-subsetByOverlaps(unlist_DLPFC, union_DLPFC[which(union_DLPFC$HOT==&quot;HOT&quot;),], invert=T)
+chip_list&lt;-split(unlist_NOT, ~name)
+chip_list2&lt;-chip_list[keep]
+
+
+df_not&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0)
+for (i in 1:length(keep)){
+  tmp&lt;-data.frame(TF=rep(keep[i],2), Threshold=rep(-1,2),recall=c(0,1), precision=c(1,0),FPR=c(0,0))
+  for (j in seq(0,0.99,by=0.01)){
+    filtered&lt;-subsetByOverlaps(TF_list2[[i]][which(TF_list2[[i]]$PP&gt;j),],union_DLPFC[which(union_DLPFC$HOT==&quot;HOT&quot;),], invert=T) # take predicted peaks above threshold and also ones not overlapping HOT sites
+    random_n&lt;-length(filtered)
+    random_sample&lt;-sample(TF_list2[[i]], random_n)
+    over&lt;-findOverlaps(filtered, chip_list2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+     FPR= length(filtered[-queryHits(over)]) /
+      (length(TF_list2[[i]][which(TF_list2[[i]]$PP&lt;j),]) +
+         length(filtered[-queryHits(over)]))
+   
+    c&lt;-c(keep[i],j,recall,precision,FPR)
+    tmp&lt;-rbind(tmp,c)
+  }
+  df_not&lt;-rbind(df_not,tmp)
+}
+df_not&lt;-df_not[-1,]
+#base metrics
+df_not$recall&lt;-as.numeric(df_not$recall)
+df_not$precision&lt;-as.numeric(df_not$precision)
+df_not$precision&lt;-ifelse(is.nan(df_not$precision),1,df_not$precision)
+df_not$Threshold&lt;-as.numeric(df_not$Threshold)
+df_not$FPR&lt;-as.numeric(df_not$FPR)
+
+df_not&lt;-df_not[which(df_not$Threshold!=-1),]
+#Get AUC for each TF and add to df_not for plotting [NOTE: AUC is auPR just name variable didn&#39;t change]
+df_not$F1&lt;-( df_not$precision*df_not$recall)/(df_not$precision+df_not$recall)
+auc&lt;-c()
+for (i in 1:length(keep)){
+  tmp&lt;-df_not[which(df_not$TF==keep[i] &amp; df_not$Threshold!=-1),]
+  AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+  auc&lt;-c(auc,AUC)
+}
+auc.df_not&lt;-data.frame(AUC=auc, TF=keep)
+df_not&lt;-merge(df_not,auc.df_not,by=&quot;TF&quot;)
+df_not$auPR&lt;-paste0(df_not$TF,&quot;: &quot;,round(df_not$AUC,3))
+df_not2&lt;-df_not
+df_not2&lt;-df_not2[order(-df_not2$AUC),]
+df_not2$auPR&lt;-factor(df_not2$auPR, levels=unique(df_not2$auPR))
+
+
+write.csv(df_not, &quot;BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR_HOTremoved.csv&quot;)
+
+
+auc.df_not$dataset&lt;-&quot;DLPFC without HOT sites&quot;
+auc.df$dataset&lt;-&quot;DLPFC with HOT sites&quot;
+both&lt;-rbind(auc.df, auc.df_not)
+both&lt;-both[order(both$dataset,-both$AUC),]
+both$TF&lt;-factor(both$TF, levels=unique(both$TF))
+pdf(&quot;virtualChIP_reanalysis_auPR_HOT_v_not.pdf&quot;, width=5,height=4)
+ggplot(both[which(both$TF!=&quot;RAD21&quot;),], aes(x=TF, y=AUC, fill=dataset))+geom_bar(stat=&quot;identity&quot;, position=&quot;dodge&quot;, width=0.75)+theme_bw()+scale_fill_manual(values=c(&quot;red&quot;,&quot;blue&quot;))+theme(axis.text.x=element_text(angle=90,hjust= 0.9))+ylab(&quot;auPR&quot;)+ylim(0,1)+theme(legend.position=&quot;top&quot;)
+dev.off()</code></pre>
+</div>
+<div id="fig-6d" class="section level2">
+<h2>Fig 6D</h2>
+<pre class="r"><code>over&lt;-findOverlaps(unlist_DLPFC, enc)
+unlist_DLPFC$encLabel&lt;-&quot;None&quot;
+unlist_DLPFC[queryHits(over)]$encLabel&lt;-enc[subjectHits(over)]$encodeLabal
+
+names&lt;-c(&quot;CTCF-only&quot;,&quot;dELS&quot;,&quot;DNase-H3K4me3&quot;,&quot;pELS&quot;,&quot;PLS&quot;,&quot;none&quot;)
+log2FE.df&lt;-c()
+for(i in 1:length(keep)){
+  temp&lt;-TF_list2[[i]] #TF_list2 is all predictions. Not filtered
+  temp&lt;-temp[which(temp$PP&gt;0.5),]
+  missing_peaks&lt;-subsetByOverlaps(unlist_DLPFC[which(unlist_DLPFC$name==keep[i]),], temp, invert=T)
+  found_peaks&lt;-subsetByOverlaps(unlist_DLPFC[which(unlist_DLPFC$name==keep[i]),], temp, invert=F)
+  if (length(found_peaks)&gt;0){
+    tab1&lt;-prop.table(table(missing_peaks$encLabel))
+    tab2&lt;-prop.table(table(found_peaks$encLabel))
+    log2FE&lt;-as.data.frame(log2(tab2[names]/tab1[names]))
+    log2FE$TF&lt;-keep[i]
+    log2FE.df&lt;-rbind(log2FE.df, log2FE)
+  }
+}
+
+log2FE.df$Var1&lt;-factor(log2FE.df$Var1, levels=c(&quot;PLS&quot;,&quot;pELS&quot;,&quot;dELS&quot;,&quot;CTCF-only&quot;,&quot;DNase-H3K4me3&quot;,&quot;none&quot;))
+pdf(&quot;ENCODE_enrichments_predicted_TFBS.pdf&quot;, width=5, height=4)
+ggplot(log2FE.df[which(is.na(log2FE.df$Var1)==F &amp; log2FE.df$Var1 %in% c(&quot;PLS&quot;,&quot;pELS&quot;,&quot;dELS&quot;,&quot;none&quot;)),], aes(x=Var1,y=Freq ,fill=Var1))+geom_boxplot()+theme_classic()+geom_jitter(alpha=0.2)+ylab(&quot;log2FE&quot;)+xlab(&quot;ENCODE annotation&quot;)+scale_fill_manual(labels= ,values=c(&quot;red&quot;,&quot;orange&quot;,&quot;gold&quot;,&quot;grey54&quot;), name=&quot;ENCODE annotation&quot;)+theme(axis.text.x=element_text(size=5))
+dev.off()</code></pre>
+</div>
+<div id="supp-fig-6" class="section level2">
+<h2>Supp Fig 6</h2>
+<pre class="r"><code>files=as.list(readLines(&quot;TFBS_prediction/virtChip/sort/ALL_sorted_predictions.txt&quot;))
+n=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,9)
+n2=sapply(strsplit(n,&quot;[_]&quot;),&quot;[[&quot;,1)
+group=sapply(strsplit(n,&quot;[_]&quot;),&quot;[[&quot;,2)
+SORT_list=lapply(files,function(x){
+  SORT=read.table(x)
+  SORT=GRanges(SORT)
+    })
+names(SORT_list)=n2
+colnames(mcols(SORT_list[[1]]))&lt;-&quot;PP&quot;
+
+for(i in 2:length(SORT_list)){
+  colnames(mcols(SORT_list[[i]]))&lt;-&quot;PP&quot;}</code></pre>
+<div id="neun" class="section level3">
+<h3>NEUN</h3>
+<pre class="r"><code>NEUN_list&lt;-SORT_list[which(group==&quot;NeuN&quot;)]
+n3&lt;-n2[which(group==&quot;NeuN&quot;)]
+
+
+NEUN2&lt;-lapply(NEUN_list, function(x){
+  subsetByOverlaps(x, HOT,invert=T)
+})
+
+
+
+files=as.list(readLines(&quot;SortedChIPseq.txt&quot;))
+m=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,7)
+m2=sapply(strsplit(m,&quot;[_]&quot;),&quot;[[&quot;,1)
+m2&lt;-ifelse(m2==&quot;NRSF&quot;,&quot;REST&quot;,m2)
+chip_sort=lapply(files,function(x){
+  chip=import(x,format=&quot;bed&quot;,extraCols=extraCols_narrowPeak) })
+names(chip_sort)=m2
+chip_sort2&lt;-lapply(chip_sort, function(x){
+  subsetByOverlaps(x, HOT,invert=T)
+})
+
+
+
+#only keep ones that have both virChip prediction and actual data
+keep&lt;-n3[which(n3 %in% m2)]
+chip_sort2&lt;-chip_sort2[keep]
+NEUN_list2&lt;-NEUN2[keep]
+
+
+df&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0, recall.random=0,precision.random=0)
+for (i in 1:length(keep)){
+  for (j in seq(0,0.99,by=0.01)){
+    filtered&lt;-NEUN_list2[[i]][which(NEUN_list2[[i]]$PP&gt;j),]
+    random_n&lt;-length(filtered)
+    random_sample&lt;-sample(NEUN_list2[[i]], random_n)
+    over&lt;-findOverlaps(filtered, chip_sort2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+     FPR= length(filtered[-queryHits(over)]) /
+      (length(NEUN_list2[[i]][which(NEUN_list2[[i]]$PP&lt;j),]) +
+         length(filtered[-queryHits(over)]))
+     
+    over&lt;-findOverlaps(random_sample, chip_sort2[[i]])
+    recall.random=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
+    precision.random= length(unique(queryHits(over))) / length(random_sample)
+    
+    c&lt;-c(keep[i],j,recall,precision,FPR, recall.random, precision.random)
+    df&lt;-rbind(df,c)
+  }
+}
+df&lt;-df[-1,]
+#base metrics
+df$recall&lt;-as.numeric(df$recall)
+df$precision&lt;-as.numeric(df$precision)
+df$precision&lt;-ifelse(is.nan(df$precision),1,df$precision)
+df$Threshold&lt;-as.numeric(df$Threshold)
+df$FPR&lt;-as.numeric(df$FPR)
+df$precision.random&lt;-as.numeric(df$precision.random)
+df$recall.random&lt;-as.numeric(df$recall.random)
+
+df&lt;-df[which(df$Threshold!=-1),]
+#Get AUC for each TF and add to df for plotting
+df$F1&lt;-( df$precision*df$recall)/(df$precision+df$recall)
+auc&lt;-c()
+for (i in 1:length(keep)){
+tmp&lt;-df[which(df$TF==keep[i] &amp; df$Threshold!=-1),]
+AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+auc&lt;-c(auc,AUC)
+}
+auc.df&lt;-data.frame(AUC=auc, TF=keep)
+df&lt;-merge(df,auc.df,by=&quot;TF&quot;)
+df$auPR&lt;-paste0(df$TF,&quot;: &quot;,round(df$AUC,3))
+df2&lt;-df
+df2&lt;-df2[order(-df2$AUC),]
+df2$auPR&lt;-factor(df2$auPR, levels=unique(df2$auPR))
+
+
+
+
+
+write.csv(df, &quot;BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_sort.csv&quot;)</code></pre>
+</div>
+<div id="olig" class="section level3">
+<h3>OLIG</h3>
+<pre class="r"><code>SORT_list&lt;-readRDS(&quot;TFBS_prediction/analysis/Entire_sorted_granges.rds&quot;)
+n2&lt;-names(SORT_list)
+Olig_list&lt;-SORT_list[seq(2,length(SORT_list), by=2)]
+n3&lt;-n2[seq(2,length(SORT_list), by=2)]
+
+
+
+
+files2=as.list(readLines(&quot;TFBS_prediction/sort_olig_BrainTF.txt&quot;))
+m=sapply(strsplit(unlist(files2),&quot;[/]&quot;),&quot;[[&quot;,8)
+m2=sapply(strsplit(m,&quot;[.]&quot;),&quot;[[&quot;,1)
+m2&lt;-ifelse(m2==&quot;NRSF&quot;,&quot;REST&quot;,m2)
+m2[1]&lt;-&quot;BHLHE40&quot;
+chip_sort=lapply(files2,function(x){
+  chip=read.table(x,sep=&quot;\t&quot;) 
+  colnames(chip)[1:3]&lt;-c(&quot;seqnames&quot;,&quot;start&quot;,&quot;end&quot;)
+  })
+names(chip_sort)=m2
+for ( i in 1:length(chip_sort)){
+  colnames(chip_sort[[i]])[1:3]&lt;-c(&quot;seqnames&quot;,&quot;start&quot;,&quot;end&quot;)
+  chip_sort[[i]]&lt;-GRanges(chip_sort[[i]])
+}
+
+
+keep&lt;-n3[which(n3 %in% m2)]
+chip_sort2&lt;-chip_sort[keep]
+Olig_list2&lt;-Olig_list[keep]
+
+
+df&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0, recall.random=0,precision.random=0)
+for (i in 1:length(keep)){
+  for (j in seq(0,0.99,by=0.01)){
+    filtered&lt;-Olig_list2[[i]][which(Olig_list2[[i]]$PP&gt;j),]
+    random_n&lt;-length(filtered)
+    random_sample&lt;-sample(Olig_list2[[i]], random_n)
+    over&lt;-findOverlaps(filtered, chip_sort2[[i]])
+    recall=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
+    precision= length(unique(queryHits(over))) / length(filtered)
+     FPR= length(filtered[-queryHits(over)]) /
+      (length(Olig_list2[[i]][which(Olig_list2[[i]]$PP&lt;j),]) +
+         length(filtered[-queryHits(over)]))
+     
+    over&lt;-findOverlaps(random_sample, chip_sort2[[i]])
+    recall.random=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
+    precision.random= length(unique(queryHits(over))) / length(random_sample)
+    
+    c&lt;-c(keep[i],j,recall,precision,FPR, recall.random, precision.random)
+    df&lt;-rbind(df,c)
+  }
+}
+df&lt;-df[-1,]
+#base metrics
+df$recall&lt;-as.numeric(df$recall)
+df$precision&lt;-as.numeric(df$precision)
+df$precision&lt;-ifelse(is.nan(df$precision),1,df$precision)
+df$Threshold&lt;-as.numeric(df$Threshold)
+df$FPR&lt;-as.numeric(df$FPR)
+df$precision.random&lt;-as.numeric(df$precision.random)
+df$recall.random&lt;-as.numeric(df$recall.random)
+
+df&lt;-df[which(df$Threshold!=-1),]
+#Get AUC for each TF and add to df for plotting
+df$F1&lt;-( df$precision*df$recall)/(df$precision+df$recall)
+auc&lt;-c()
+for (i in 1:length(keep)){
+tmp&lt;-df[which(df$TF==keep[i] &amp; df$Threshold!=-1),]
+AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
+auc&lt;-c(auc,AUC)
+}
+auc.df&lt;-data.frame(AUC=auc, TF=keep)
+df&lt;-merge(df,auc.df,by=&quot;TF&quot;)
+df$auPR&lt;-paste0(df$TF,&quot;: &quot;,round(df$AUC,3))
+df2&lt;-df
+df2&lt;-df2[order(-df2$AUC),]
+df2$auPR&lt;-factor(df2$auPR, levels=unique(df2$auPR))
+
+
+
+
+
+write.csv(df, &quot;BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_Olig.csv&quot;)
+tmp&lt;-read.csv(&quot;BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_sort.csv&quot;) #this is actually NeuN
+tmp&lt;-tmp[!duplicated(tmp$TF),]
+tmp&lt;-tmp[,c(10,2)]
+tmp$ct&lt;-&quot;NEUN&quot;
+auc.df$ct&lt;-&quot;OLIG&quot;
+al&lt;-rbind(tmp, auc.df)
+al&lt;-al[order(-al$AUC),]
+al$TF&lt;-factor(al$TF, levels=unique(al$TF))
+
+
+bulk&lt;-read.csv(&quot;TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR.csv&quot;)
+bulk&lt;-bulk[!duplicated(bulk$TF),]
+bulk&lt;-bulk[,c(8,2)]
+bulk$ct&lt;-&quot;BULK&quot;
+al2&lt;-rbind(al,bulk)
+al2&lt;-al2[which(al2$TF %in% al$TF),]
+pdf(&quot;TFBS_prediction/plots/virChIP_auPR_OLIG_v_NEUN_v_BULK.pdf&quot;, width=4, height=4)
+ggplot(al2, aes(x=TF,y=AUC, shape=ct, color=ct))+geom_point()+theme_classic()+guides(shape=&quot;none&quot;)+theme(axis.text.x=element_text(angle=90))+ylab(&quot;auPR&quot;)+ylim(0,1)+scale_color_manual(values=c(&quot;goldenrod1&quot;,&quot;cornflowerblue&quot;,&quot;seagreen3&quot;))
+dev.off()</code></pre>
+</div>
+</div>
+</div>
+<div id="figure-6-correlating-dap-binding-with-gene-expression-and-chromatin-accessibility." class="section level1">
+<h1>Figure 6: Correlating DAP binding with gene expression and chromatin accessibility.</h1>
 <div id="fig-5a-heatmap" class="section level2">
 <h2>Fig 5A: Heatmap</h2>
 <pre class="r"><code>library(EnrichedHeatmap)
@@ -3089,555 +3638,6 @@ ggplot(aes(fill=category,y=percentage, x=TF)) + geom_bar(position = &quot;fill&q
   scale_fill_manual(values = c(&quot;black&quot;,&quot;gray&quot;,&quot;red&quot;,&quot;yellow&quot;,&quot;green&quot;,&quot;blue&quot;)) +
   theme(axis.text.x = element_text(angle = 90, size = 12), axis.text.y = element_text(size=15), legend.text=element_text(size=20))
 dev.off()</code></pre>
-</div>
-</div>
-<div id="figure-6-comparison-of-chip-seq-results-with-predictive-models." class="section level1">
-<h1>Figure 6: Comparison of ChIP-seq results with predictive models.</h1>
-<div id="virtual-chip-seq-predictions" class="section level2">
-<h2>Virtual ChIP-seq predictions</h2>
-<p>ran script for each predicted TF and for BULK, NEUN, and OLIG</p>
-<pre class="bash"><code>#!/bin/bash
-
-#BULK
-#RNA=TFBS_prediction/virtChip/Bulk_avgAcrossDLPFC_RNA.tsv.gz
-#SORTED
-RNA=TFBS_prediction/virtChip/Sorted_avgAcrossDLPFC_RNA.tsv.gz
-
-#NeuN
-ATAC=ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_NeuN_idr.optimal_peak.narrowPeak.gz
-#Olig
-#ATAC=ATAC/cromwell_output/peak/idr_reproducibility/1238_1242_DLPFC_Olig2_idr.optimal_peak.narrowPeak.gz
-#Bulk
-#ATAC=1224_1230_bulk_atac_bio-rep/atac/89e798c6-aef4-4137-98b0-696968d30c56/call-idr/shard-0/execution/rep1_vs_rep2.idr0.05.bfilt.narrowPeak.gz
-
-TF=$1
-CT=$2
-
-python virchip/virchip/make_input.py ${TF} sort/${TF}_${CT}_complete.tsv.gz     data/chipExpDir/${TF} \
-        $RNA data/RefTablesSummary \
-        --rna-cell $CT \
-        --blacklist_path data/hg38_EncodeBlackListedRegions_200bpBins.bed.gz \
-        --bin_size 200 --merge-chips\
-        --chromsize-path data/hg38_chrsize.tsv \
-        --dnase-path $ATAC
-
-
-python virchip/virchip/predict.py data/virchipModels sort/${TF}_${CT}_complete.tsv.gz \
-        sort/${TF}_${CT}_predictions.tsv.gz ${TF}
-</code></pre>
-</div>
-<div id="fig-6a" class="section level2">
-<h2>Fig 6A:</h2>
-<pre class="r"><code>files=as.list(readLines(&quot;BrainTF/TFBS_prediction/virtChip/out/ALL_predictions.tsv&quot;))
-files&lt;-files[grepl(&quot;predictions&quot;,files)]
-n=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,10)
-n2=sapply(strsplit(n,&quot;[_]&quot;),&quot;[[&quot;,1)
-TF_list=lapply(files,function(x){
-  TF=read.table(x)
-  TF=GRanges(TF)
-    })
-names(TF_list)=n2
-colnames(mcols(TF_list[[1]]))&lt;-&quot;PP&quot;
-for(i in 2:48){
-  colnames(mcols(TF_list[[i]]))&lt;-&quot;PP&quot;}
-unlist&lt;-as.data.frame(TF_list[[1]])
-for(i in 2:42){
-  unlist&lt;-rbind(unlist, as.data.frame(TF_list[[i]]))
-}
-unlist$peak&lt;-rownames(unlist)
-unlist&lt;-GRanges(unlist[!duplicated(unlist$peak),])
-
-
-unlist_DLPFC&lt;-readRDS(&quot;unlist_DLPFC.rds&quot;)
-unlist_DLPFC$name&lt;-ifelse(unlist_DLPFC$name==&quot;NRSF&quot;,&quot;REST&quot;,ifelse(unlist_DLPFC$name==&quot;SREBP2&quot;,&quot;SREBF2&quot;, 
-                       ifelse(unlist_DLPFC$name==&quot;CREB&quot;,&quot;CREB1&quot;,unlist_DLPFC$name)))
-m2&lt;-unique(unlist_DLPFC$name)
-chip_list&lt;-split(unlist_DLPFC, ~name)
-#only keep ones that have both virChip prediction and actual data
-keep&lt;-n2[which(n2 %in% m2)]
-chip_list2&lt;-chip_list[keep]
-TF_list2&lt;-TF_list[keep]
-
-
-df&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0)
-for (i in 1:length(keep)){
-  tmp&lt;-data.frame(TF=rep(keep[i],2), Threshold=rep(-1,2),recall=c(0,1), precision=c(1,0),FPR=c(0,0),recall.random=c(0,1), precision.random=c(1,0))
-  for (j in seq(0,0.99,by=0.01)){
-    filtered&lt;-TF_list2[[i]][which(TF_list2[[i]]$PP&gt;j),]
-    over&lt;-findOverlaps(filtered, chip_list2[[i]])
-    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
-    precision= length(unique(queryHits(over))) / length(filtered)
-     FPR= length(filtered[-queryHits(over)]) /
-      (length(TF_list2[[i]][which(TF_list2[[i]]$PP&lt;j),]) +
-         length(filtered[-queryHits(over)]))
-
-    c&lt;-c(keep[i],j,recall,precision,FPR)
-    tmp&lt;-rbind(tmp,c)
-  }
-  df&lt;-rbind(df,tmp)
-}
-df&lt;-df[-1,]
-#base metrics
-df$recall&lt;-as.numeric(df$recall)
-df$precision&lt;-as.numeric(df$precision)
-df$precision&lt;-ifelse(is.nan(df$precision),1,df$precision)
-df$Threshold&lt;-as.numeric(df$Threshold)
-df$FPR&lt;-as.numeric(df$FPR)
-
-df&lt;-df[which(df$Threshold!=-1),]
-#Get auPR for each TF and add to df for plotting [NOTE: AUC is auPR just name variable didn&#39;t change]
-df$F1&lt;-( df$precision*df$recall)/(df$precision+df$recall)
-auc&lt;-c()
-for (i in 1:length(keep)){
-  tmp&lt;-df[which(df$TF==keep[i] &amp; df$Threshold!=-1),]
-  AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
-  auc&lt;-c(auc,AUC)
-}
-auc.df&lt;-data.frame(AUC=auc, TF=keep)
-df&lt;-merge(df,auc.df,by=&quot;TF&quot;)
-df$auPR&lt;-paste0(df$TF,&quot;: &quot;,round(df$AUC,3))
-df2&lt;-df
-df2&lt;-df2[order(-df2$AUC),]
-df2$auPR&lt;-factor(df2$auPR, levels=unique(df2$auPR))
-
-
-
-write.csv(df, &quot;BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv&quot;)
-
-
-
-
-atac&lt;-import(&quot;1224_1230_bulk_atac_bio-rep/atac/89e798c6-aef4-4137-98b0-696968d30c56/call-idr/shard-0/execution/rep1_vs_rep2.idr0.05.bfilt.narrowPeak.gz&quot;)
-library(TFBSTools)
-library(motifmatchr)
-library(BSgenome.Hsapiens.UCSC.hg38)
- pfm2_dups&lt;-readRDS( &quot;BrainTF/Filtered_PFM.rds&quot;)
-
-  #match motifs
-  motif_pos&lt;-matchMotifs(pfm2_dups,atac, genome = BSgenome.Hsapiens.UCSC.hg38,  out=&quot;positions&quot;)
-
-motif_pos2&lt;-motif_pos[keep] #keep is from reanalysis section. TFs in plot
-
-
-#this gives you TFBS predictions for each tf by just saying any atac peak with the corresponding motif is predicted
-motifs&lt;-list()
-for (i in 1:length(keep)){
-  sp1.motifs&lt;-unique(unlist(motif_pos[grepl(keep[i], toupper(names(motif_pos)))]))
-  if (length(sp1.motifs)&gt;0){
-    sp1.motifs$pos&lt;-paste0(seqnames(sp1.motifs),&quot;:&quot;,start(sp1.motifs),&quot;-&quot;,end(sp1.motifs))
-    #find overlaps with original peak list
-    over&lt;-findOverlaps(atac,sp1.motifs)
-    atac.overlap&lt;-atac[unique(queryHits(over))] #I uniqued to get proportion with motifs but change at this step to get motif position
-    motifs[[i]]&lt;-atac.overlap
-  }
-  else {
-    motifs[[i]]&lt;-sp1.motifs
-  }
-}
-names(motifs)&lt;-keep
-
-#calculate precision and recall for this method
-mf&lt;-data.frame(TF=&quot;A&quot;,precision=0,recall=0)
-for (i in 1:length(keep)){
-  over&lt;-findOverlaps(motifs[[i]], chip_list2[[i]])
-  p&lt;-length(unique(queryHits(over)))/length(motifs[[i]])
-  r&lt;-length(unique(subjectHits(over)))/length(chip_list2[[i]])
-  c&lt;-c(keep[i],p,r)
-  mf&lt;-rbind(mf, c)
-}
-mf2&lt;-mf
-mf2$recall&lt;-as.numeric(mf2$recall)
-mf2$precision&lt;-as.numeric(mf2$precision)
-
-
-#load back in virtual ChIP-seq predictions to plot
-virt&lt;-read.csv(&quot;BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv&quot;)
-virt.df&lt;-merge(mf2,virt,by=&quot;TF&quot;, all.y=T)
-
-pdf(&quot;virtChIP_v_motif_rerun.pdf&quot;, width=8,height=6)
-ggplot(virt.df[which(virt.df$recall.y!=0 &amp; virt.df$precision.y !=1 &amp; virt.df$TF!=&quot;RAD21&quot;),])+geom_line(aes(x=recall.y, y=precision.y))+geom_point(aes(x=recall.x, y=precision.x), shape=8, color=&quot;red&quot;)+theme_classic()+facet_wrap(~TF)+ylab(&quot;precision&quot;)+xlab(&quot;recall&quot;)
-dev.off()</code></pre>
-</div>
-<div id="fig-6b" class="section level2">
-<h2>Fig 6B:</h2>
-<pre class="r"><code>files=as.list(readLines(&quot;BrainTF/TFBS_prediction/encode_data/ALL_predictions.txt&quot;))
-n=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,10)
-n2=sapply(strsplit(n,&quot;[_]&quot;),&quot;[[&quot;,1)
-TF_list=lapply(files,function(x){
-  TF=read.table(x)
-  TF=GRanges(TF)
-    })
-names(TF_list)=n2
-colnames(mcols(TF_list[[1]]))&lt;-&quot;PP&quot;
-tf_unlist&lt;-TF_list[[1]]
-for(i in 2:length(TF_list)){
-  colnames(mcols(TF_list[[i]]))&lt;-&quot;PP&quot;
-  tf_unlist&lt;-c( tf_unlist,TF_list[[i]])}
-
-#add in chipseq idr peaks
-files=as.list(readLines(&quot;BrainTF/TFBS_prediction/encode_data/ENCODE_chip.txt&quot;))
-m=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,10)
-m2=sapply(strsplit(m,&quot;[.]&quot;),&quot;[[&quot;,1)
-m2&lt;-ifelse(m2==&quot;NRSF&quot;,&quot;REST&quot;,m2)
-chip_list=lapply(files,function(x){
-  chip=import(x,format=&quot;bb&quot;)}) 
-names(chip_list)=m2
-
-#only keep ones that have both virChip prediction and actual data
-keep2&lt;-n2[which(n2 %in% m2)]
-chip_list2&lt;-chip_list[keep2]
-ENC_TF_list2&lt;-TF_list[keep2]
-
-
-en&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0)
-for (i in 1:length(keep2)){
-  for (j in seq(0,0.99,by=0.01)){
-    filtered&lt;-ENC_TF_list2[[i]][which(ENC_TF_list2[[i]]$PP&gt;j),]
-    over&lt;-findOverlaps(filtered, chip_list2[[i]])
-    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
-    precision= length(unique(queryHits(over))) / length(filtered)
-    FPR= length(filtered[-queryHits(over)]) / (length(ENC_TF_list2[[i]][which(ENC_TF_list2[[i]]$PP&lt;j),]) + length(filtered[-queryHits(over)])) #FP is ones called positive at filter/ all virtChip-TP
-    c&lt;-c(keep2[i],j,recall,precision,FPR)
-    en&lt;-rbind(en,c)
-  }
-}
-en&lt;-en[-1,]
-#basis metrics
-en$recall&lt;-as.numeric(en$recall)
-en$precision&lt;-as.numeric(en$precision)
-en$precision&lt;-ifelse(is.nan(en$precision),1,en$precision)
-en$Threshold&lt;-as.numeric(en$Threshold)
-en$FPR&lt;-as.numeric(en$FPR)
-
-#add auPR stat
-en$F1&lt;-( en$precision*en$recall)/(en$precision+en$recall)
-auc&lt;-c()
-for (i in 1:length(keep2)){
-tmp&lt;-en[which(en$TF==keep2[i]),]
-AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
-auc&lt;-c(auc,AUC)
-}
-auc.en&lt;-data.frame(AUC=auc, TF=keep)
-auc.en$dataset&lt;-&quot;ENCODE&quot;
-auc.df$dataset&lt;-&quot;BrainTF&quot;
-auc.df&lt;-auc.df[which(auc.df$TF %in% keep),]  #format bulk aupr to match
-auc&lt;-rbind(auc.df, auc.en)
-auc&lt;-auc[order(auc$AUC,decreasing = T),]
-auc$TF&lt;-factor(auc$TF, levels=unique(auc$TF))
-pdf(&quot;TFBS_prediction/plots/encode_v_BrainTF_virtualChipseq_batch2.pdf&quot;, width=4,height=3)
-ggplot(auc, aes(x=TF,y=AUC,color=as.factor(TF), shape=dataset))+geom_point(size=2)+theme_bw()+ylim(0,1)+theme( axis.text.x=element_text(angle=90))+guides(color=&quot;none&quot;)+ylab(&quot;auPR&quot;)+ggtitle(&quot;auPR virtual ChIPseq&quot;)
-dev.off()
-
-write.csv(en, &quot;BrainTF/TFBS_prediction/analysis/virtualChIP_onENCODE_auPR_batch2.csv&quot;)
-
-
-
-
-# load in predictions from BrainTF to plot together
-btf&lt;-read.csv(&quot;BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR.csv&quot;)
-btf&lt;-btf[!duplicated(btf$TF),]
-both&lt;-merge(btf, auc.en, by=&quot;TF&quot;)
-both.m&lt;-melt(both[,c(1,10,12)], id.vars=&quot;TF&quot;)
-both.m$dataset&lt;-ifelse(both.m$variable==&quot;AUC.x&quot;, &quot;BrainTF&quot;,&quot;ENCODE&quot;)
-both.m&lt;-both.m[order(both.m$variable, both.m$value, decreasing=T),]
-both.m$TF&lt;-factor(both.m$TF, levels=unique(both.m$TF))
-pdf(&quot;VirtualChIP_BrainTF_vs_ENCODE_added.pdf&quot;, width=5,height=3)
-ggplot(both.m, aes(x=TF, y=value, fill=dataset))+geom_bar(stat=&quot;identity&quot;, position=&quot;dodge&quot;, width=0.75)+theme_bw()+xlab(&quot;TF&quot;)+ylab(&quot;auPR&quot;)+scale_fill_manual(values=c(&quot;darkgoldenrod3&quot;,&quot;mediumorchid3&quot;))+theme(axis.text.x=element_text(angle=45, vjust=0.97,hjust= 0.9))
-dev.off()</code></pre>
-</div>
-<div id="fig-6c" class="section level2">
-<h2>Fig 6C:</h2>
-<pre class="r"><code>#REMOVE HOT sites
-unlist_NOT&lt;-subsetByOverlaps(unlist_DLPFC, union_DLPFC[which(union_DLPFC$HOT==&quot;HOT&quot;),], invert=T)
-chip_list&lt;-split(unlist_NOT, ~name)
-chip_list2&lt;-chip_list[keep]
-
-
-df_not&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0)
-for (i in 1:length(keep)){
-  tmp&lt;-data.frame(TF=rep(keep[i],2), Threshold=rep(-1,2),recall=c(0,1), precision=c(1,0),FPR=c(0,0))
-  for (j in seq(0,0.99,by=0.01)){
-    filtered&lt;-subsetByOverlaps(TF_list2[[i]][which(TF_list2[[i]]$PP&gt;j),],union_DLPFC[which(union_DLPFC$HOT==&quot;HOT&quot;),], invert=T) # take predicted peaks above threshold and also ones not overlapping HOT sites
-    random_n&lt;-length(filtered)
-    random_sample&lt;-sample(TF_list2[[i]], random_n)
-    over&lt;-findOverlaps(filtered, chip_list2[[i]])
-    recall=length(unique(subjectHits(over)))/ length(chip_list2[[i]]) #TPR
-    precision= length(unique(queryHits(over))) / length(filtered)
-     FPR= length(filtered[-queryHits(over)]) /
-      (length(TF_list2[[i]][which(TF_list2[[i]]$PP&lt;j),]) +
-         length(filtered[-queryHits(over)]))
-   
-    c&lt;-c(keep[i],j,recall,precision,FPR)
-    tmp&lt;-rbind(tmp,c)
-  }
-  df_not&lt;-rbind(df_not,tmp)
-}
-df_not&lt;-df_not[-1,]
-#base metrics
-df_not$recall&lt;-as.numeric(df_not$recall)
-df_not$precision&lt;-as.numeric(df_not$precision)
-df_not$precision&lt;-ifelse(is.nan(df_not$precision),1,df_not$precision)
-df_not$Threshold&lt;-as.numeric(df_not$Threshold)
-df_not$FPR&lt;-as.numeric(df_not$FPR)
-
-df_not&lt;-df_not[which(df_not$Threshold!=-1),]
-#Get AUC for each TF and add to df_not for plotting [NOTE: AUC is auPR just name variable didn&#39;t change]
-df_not$F1&lt;-( df_not$precision*df_not$recall)/(df_not$precision+df_not$recall)
-auc&lt;-c()
-for (i in 1:length(keep)){
-  tmp&lt;-df_not[which(df_not$TF==keep[i] &amp; df_not$Threshold!=-1),]
-  AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
-  auc&lt;-c(auc,AUC)
-}
-auc.df_not&lt;-data.frame(AUC=auc, TF=keep)
-df_not&lt;-merge(df_not,auc.df_not,by=&quot;TF&quot;)
-df_not$auPR&lt;-paste0(df_not$TF,&quot;: &quot;,round(df_not$AUC,3))
-df_not2&lt;-df_not
-df_not2&lt;-df_not2[order(-df_not2$AUC),]
-df_not2$auPR&lt;-factor(df_not2$auPR, levels=unique(df_not2$auPR))
-
-
-write.csv(df_not, &quot;BrainTF/TFBS_prediction/analysis/230308_virtualChIP_onBrainTF_auPR_HOTremoved.csv&quot;)
-
-
-auc.df_not$dataset&lt;-&quot;DLPFC without HOT sites&quot;
-auc.df$dataset&lt;-&quot;DLPFC with HOT sites&quot;
-both&lt;-rbind(auc.df, auc.df_not)
-both&lt;-both[order(both$dataset,-both$AUC),]
-both$TF&lt;-factor(both$TF, levels=unique(both$TF))
-pdf(&quot;virtualChIP_reanalysis_auPR_HOT_v_not.pdf&quot;, width=5,height=4)
-ggplot(both[which(both$TF!=&quot;RAD21&quot;),], aes(x=TF, y=AUC, fill=dataset))+geom_bar(stat=&quot;identity&quot;, position=&quot;dodge&quot;, width=0.75)+theme_bw()+scale_fill_manual(values=c(&quot;red&quot;,&quot;blue&quot;))+theme(axis.text.x=element_text(angle=90,hjust= 0.9))+ylab(&quot;auPR&quot;)+ylim(0,1)+theme(legend.position=&quot;top&quot;)
-dev.off()</code></pre>
-</div>
-<div id="fig-6d" class="section level2">
-<h2>Fig 6D</h2>
-<pre class="r"><code>over&lt;-findOverlaps(unlist_DLPFC, enc)
-unlist_DLPFC$encLabel&lt;-&quot;None&quot;
-unlist_DLPFC[queryHits(over)]$encLabel&lt;-enc[subjectHits(over)]$encodeLabal
-
-names&lt;-c(&quot;CTCF-only&quot;,&quot;dELS&quot;,&quot;DNase-H3K4me3&quot;,&quot;pELS&quot;,&quot;PLS&quot;,&quot;none&quot;)
-log2FE.df&lt;-c()
-for(i in 1:length(keep)){
-  temp&lt;-TF_list2[[i]] #TF_list2 is all predictions. Not filtered
-  temp&lt;-temp[which(temp$PP&gt;0.5),]
-  missing_peaks&lt;-subsetByOverlaps(unlist_DLPFC[which(unlist_DLPFC$name==keep[i]),], temp, invert=T)
-  found_peaks&lt;-subsetByOverlaps(unlist_DLPFC[which(unlist_DLPFC$name==keep[i]),], temp, invert=F)
-  if (length(found_peaks)&gt;0){
-    tab1&lt;-prop.table(table(missing_peaks$encLabel))
-    tab2&lt;-prop.table(table(found_peaks$encLabel))
-    log2FE&lt;-as.data.frame(log2(tab2[names]/tab1[names]))
-    log2FE$TF&lt;-keep[i]
-    log2FE.df&lt;-rbind(log2FE.df, log2FE)
-  }
-}
-
-log2FE.df$Var1&lt;-factor(log2FE.df$Var1, levels=c(&quot;PLS&quot;,&quot;pELS&quot;,&quot;dELS&quot;,&quot;CTCF-only&quot;,&quot;DNase-H3K4me3&quot;,&quot;none&quot;))
-pdf(&quot;ENCODE_enrichments_predicted_TFBS.pdf&quot;, width=5, height=4)
-ggplot(log2FE.df[which(is.na(log2FE.df$Var1)==F &amp; log2FE.df$Var1 %in% c(&quot;PLS&quot;,&quot;pELS&quot;,&quot;dELS&quot;,&quot;none&quot;)),], aes(x=Var1,y=Freq ,fill=Var1))+geom_boxplot()+theme_classic()+geom_jitter(alpha=0.2)+ylab(&quot;log2FE&quot;)+xlab(&quot;ENCODE annotation&quot;)+scale_fill_manual(labels= ,values=c(&quot;red&quot;,&quot;orange&quot;,&quot;gold&quot;,&quot;grey54&quot;), name=&quot;ENCODE annotation&quot;)+theme(axis.text.x=element_text(size=5))
-dev.off()</code></pre>
-</div>
-<div id="supp-fig-6" class="section level2">
-<h2>Supp Fig 6</h2>
-<pre class="r"><code>files=as.list(readLines(&quot;TFBS_prediction/virtChip/sort/ALL_sorted_predictions.txt&quot;))
-n=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,9)
-n2=sapply(strsplit(n,&quot;[_]&quot;),&quot;[[&quot;,1)
-group=sapply(strsplit(n,&quot;[_]&quot;),&quot;[[&quot;,2)
-SORT_list=lapply(files,function(x){
-  SORT=read.table(x)
-  SORT=GRanges(SORT)
-    })
-names(SORT_list)=n2
-colnames(mcols(SORT_list[[1]]))&lt;-&quot;PP&quot;
-
-for(i in 2:length(SORT_list)){
-  colnames(mcols(SORT_list[[i]]))&lt;-&quot;PP&quot;}</code></pre>
-<div id="neun" class="section level3">
-<h3>NEUN</h3>
-<pre class="r"><code>NEUN_list&lt;-SORT_list[which(group==&quot;NeuN&quot;)]
-n3&lt;-n2[which(group==&quot;NeuN&quot;)]
-
-
-NEUN2&lt;-lapply(NEUN_list, function(x){
-  subsetByOverlaps(x, HOT,invert=T)
-})
-
-
-
-files=as.list(readLines(&quot;SortedChIPseq.txt&quot;))
-m=sapply(strsplit(unlist(files),&quot;[/]&quot;),&quot;[[&quot;,7)
-m2=sapply(strsplit(m,&quot;[_]&quot;),&quot;[[&quot;,1)
-m2&lt;-ifelse(m2==&quot;NRSF&quot;,&quot;REST&quot;,m2)
-chip_sort=lapply(files,function(x){
-  chip=import(x,format=&quot;bed&quot;,extraCols=extraCols_narrowPeak) })
-names(chip_sort)=m2
-chip_sort2&lt;-lapply(chip_sort, function(x){
-  subsetByOverlaps(x, HOT,invert=T)
-})
-
-
-
-#only keep ones that have both virChip prediction and actual data
-keep&lt;-n3[which(n3 %in% m2)]
-chip_sort2&lt;-chip_sort2[keep]
-NEUN_list2&lt;-NEUN2[keep]
-
-
-df&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0, recall.random=0,precision.random=0)
-for (i in 1:length(keep)){
-  for (j in seq(0,0.99,by=0.01)){
-    filtered&lt;-NEUN_list2[[i]][which(NEUN_list2[[i]]$PP&gt;j),]
-    random_n&lt;-length(filtered)
-    random_sample&lt;-sample(NEUN_list2[[i]], random_n)
-    over&lt;-findOverlaps(filtered, chip_sort2[[i]])
-    recall=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
-    precision= length(unique(queryHits(over))) / length(filtered)
-     FPR= length(filtered[-queryHits(over)]) /
-      (length(NEUN_list2[[i]][which(NEUN_list2[[i]]$PP&lt;j),]) +
-         length(filtered[-queryHits(over)]))
-     
-    over&lt;-findOverlaps(random_sample, chip_sort2[[i]])
-    recall.random=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
-    precision.random= length(unique(queryHits(over))) / length(random_sample)
-    
-    c&lt;-c(keep[i],j,recall,precision,FPR, recall.random, precision.random)
-    df&lt;-rbind(df,c)
-  }
-}
-df&lt;-df[-1,]
-#base metrics
-df$recall&lt;-as.numeric(df$recall)
-df$precision&lt;-as.numeric(df$precision)
-df$precision&lt;-ifelse(is.nan(df$precision),1,df$precision)
-df$Threshold&lt;-as.numeric(df$Threshold)
-df$FPR&lt;-as.numeric(df$FPR)
-df$precision.random&lt;-as.numeric(df$precision.random)
-df$recall.random&lt;-as.numeric(df$recall.random)
-
-df&lt;-df[which(df$Threshold!=-1),]
-#Get AUC for each TF and add to df for plotting
-df$F1&lt;-( df$precision*df$recall)/(df$precision+df$recall)
-auc&lt;-c()
-for (i in 1:length(keep)){
-tmp&lt;-df[which(df$TF==keep[i] &amp; df$Threshold!=-1),]
-AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
-auc&lt;-c(auc,AUC)
-}
-auc.df&lt;-data.frame(AUC=auc, TF=keep)
-df&lt;-merge(df,auc.df,by=&quot;TF&quot;)
-df$auPR&lt;-paste0(df$TF,&quot;: &quot;,round(df$AUC,3))
-df2&lt;-df
-df2&lt;-df2[order(-df2$AUC),]
-df2$auPR&lt;-factor(df2$auPR, levels=unique(df2$auPR))
-
-
-
-
-
-write.csv(df, &quot;BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_sort.csv&quot;)</code></pre>
-</div>
-<div id="olig" class="section level3">
-<h3>OLIG</h3>
-<pre class="r"><code>SORT_list&lt;-readRDS(&quot;TFBS_prediction/analysis/Entire_sorted_granges.rds&quot;)
-n2&lt;-names(SORT_list)
-Olig_list&lt;-SORT_list[seq(2,length(SORT_list), by=2)]
-n3&lt;-n2[seq(2,length(SORT_list), by=2)]
-
-
-
-
-files2=as.list(readLines(&quot;TFBS_prediction/sort_olig_BrainTF.txt&quot;))
-m=sapply(strsplit(unlist(files2),&quot;[/]&quot;),&quot;[[&quot;,8)
-m2=sapply(strsplit(m,&quot;[.]&quot;),&quot;[[&quot;,1)
-m2&lt;-ifelse(m2==&quot;NRSF&quot;,&quot;REST&quot;,m2)
-m2[1]&lt;-&quot;BHLHE40&quot;
-chip_sort=lapply(files2,function(x){
-  chip=read.table(x,sep=&quot;\t&quot;) 
-  colnames(chip)[1:3]&lt;-c(&quot;seqnames&quot;,&quot;start&quot;,&quot;end&quot;)
-  })
-names(chip_sort)=m2
-for ( i in 1:length(chip_sort)){
-  colnames(chip_sort[[i]])[1:3]&lt;-c(&quot;seqnames&quot;,&quot;start&quot;,&quot;end&quot;)
-  chip_sort[[i]]&lt;-GRanges(chip_sort[[i]])
-}
-
-
-keep&lt;-n3[which(n3 %in% m2)]
-chip_sort2&lt;-chip_sort[keep]
-Olig_list2&lt;-Olig_list[keep]
-
-
-df&lt;-data.frame(TF=&quot;A&quot;,Threshold=0,recall=0, precision=0, FPR=0, recall.random=0,precision.random=0)
-for (i in 1:length(keep)){
-  for (j in seq(0,0.99,by=0.01)){
-    filtered&lt;-Olig_list2[[i]][which(Olig_list2[[i]]$PP&gt;j),]
-    random_n&lt;-length(filtered)
-    random_sample&lt;-sample(Olig_list2[[i]], random_n)
-    over&lt;-findOverlaps(filtered, chip_sort2[[i]])
-    recall=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
-    precision= length(unique(queryHits(over))) / length(filtered)
-     FPR= length(filtered[-queryHits(over)]) /
-      (length(Olig_list2[[i]][which(Olig_list2[[i]]$PP&lt;j),]) +
-         length(filtered[-queryHits(over)]))
-     
-    over&lt;-findOverlaps(random_sample, chip_sort2[[i]])
-    recall.random=length(unique(subjectHits(over)))/ length(chip_sort2[[i]]) #TPR
-    precision.random= length(unique(queryHits(over))) / length(random_sample)
-    
-    c&lt;-c(keep[i],j,recall,precision,FPR, recall.random, precision.random)
-    df&lt;-rbind(df,c)
-  }
-}
-df&lt;-df[-1,]
-#base metrics
-df$recall&lt;-as.numeric(df$recall)
-df$precision&lt;-as.numeric(df$precision)
-df$precision&lt;-ifelse(is.nan(df$precision),1,df$precision)
-df$Threshold&lt;-as.numeric(df$Threshold)
-df$FPR&lt;-as.numeric(df$FPR)
-df$precision.random&lt;-as.numeric(df$precision.random)
-df$recall.random&lt;-as.numeric(df$recall.random)
-
-df&lt;-df[which(df$Threshold!=-1),]
-#Get AUC for each TF and add to df for plotting
-df$F1&lt;-( df$precision*df$recall)/(df$precision+df$recall)
-auc&lt;-c()
-for (i in 1:length(keep)){
-tmp&lt;-df[which(df$TF==keep[i] &amp; df$Threshold!=-1),]
-AUC &lt;- abs(sum(diff(tmp$recall)*rollmean(tmp$precision,2)))
-auc&lt;-c(auc,AUC)
-}
-auc.df&lt;-data.frame(AUC=auc, TF=keep)
-df&lt;-merge(df,auc.df,by=&quot;TF&quot;)
-df$auPR&lt;-paste0(df$TF,&quot;: &quot;,round(df$AUC,3))
-df2&lt;-df
-df2&lt;-df2[order(-df2$AUC),]
-df2$auPR&lt;-factor(df2$auPR, levels=unique(df2$auPR))
-
-
-
-
-
-write.csv(df, &quot;BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_Olig.csv&quot;)
-tmp&lt;-read.csv(&quot;BrainTF/TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR_sort.csv&quot;) #this is actually NeuN
-tmp&lt;-tmp[!duplicated(tmp$TF),]
-tmp&lt;-tmp[,c(10,2)]
-tmp$ct&lt;-&quot;NEUN&quot;
-auc.df$ct&lt;-&quot;OLIG&quot;
-al&lt;-rbind(tmp, auc.df)
-al&lt;-al[order(-al$AUC),]
-al$TF&lt;-factor(al$TF, levels=unique(al$TF))
-
-
-bulk&lt;-read.csv(&quot;TFBS_prediction/analysis/virtualChIP_onBrainTF_auPR.csv&quot;)
-bulk&lt;-bulk[!duplicated(bulk$TF),]
-bulk&lt;-bulk[,c(8,2)]
-bulk$ct&lt;-&quot;BULK&quot;
-al2&lt;-rbind(al,bulk)
-al2&lt;-al2[which(al2$TF %in% al$TF),]
-pdf(&quot;TFBS_prediction/plots/virChIP_auPR_OLIG_v_NEUN_v_BULK.pdf&quot;, width=4, height=4)
-ggplot(al2, aes(x=TF,y=AUC, shape=ct, color=ct))+geom_point()+theme_classic()+guides(shape=&quot;none&quot;)+theme(axis.text.x=element_text(angle=90))+ylab(&quot;auPR&quot;)+ylim(0,1)+scale_color_manual(values=c(&quot;goldenrod1&quot;,&quot;cornflowerblue&quot;,&quot;seagreen3&quot;))
-dev.off()</code></pre>
-</div>
 </div>
 </div>
 <div id="figure-7-association-of-daps-with-dease-through-gwas-traits" class="section level1">
