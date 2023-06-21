@@ -8,3 +8,4 @@ Transcription factors (TFs) orchestrate gene expression programs crucial for cel
 #### This repository contains all code generated for Loupe et al. 2023 (click [here](https://aanderson54.github.io/Loupe_BrainTF/) to view code). Pre-processing scripts can be found in the scripts directory.
 
 
+[![DOI](https://zenodo.org/badge/635343701.svg)](https://zenodo.org/badge/latestdoi/635343701)
