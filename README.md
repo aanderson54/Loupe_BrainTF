@@ -15,7 +15,7 @@ Transcription factors (TFs) orchestrate gene expression programs crucial for cel
 
 
 ## Data Usage
-In addition, we have included a large portion of the data here ([data/](https://aanderson54.com/Loupe_BrainTF/data)) to facilitate the use of this resource. We have included ChIP-seq peaks from experiments performed in the 4 large brain regions (CB, DLPFC, FP, and OL) and in all cell types (Bulk, NeuN+, Olig2+, Neg). Peaks have been formatted as `GenomicRanges` objects and saved as an `rds` for easy download. Each `unlist_*.rds` contains  a list of the peaks called for each TF for that brain region/cell-type. Some examples of data interaction are included below. To learn more about GenomicRanges object, see their [vignette](https://bioconductor.org/packages/release/bioc/vignettes/GenomicRanges/inst/doc/GenomicRangesIntroduction.html).
+In addition, we have included a large portion of the data here ([data/]([https://aanderson54.com/Loupe_BrainTF/data](https://github.com/aanderson54/Loupe_BrainTF/tree/main/data))) to facilitate the use of this resource. We have included ChIP-seq peaks from experiments performed in the 4 large brain regions (CB, DLPFC, FP, and OL) and in all cell types (Bulk, NeuN+, Olig2+, Neg). Peaks have been formatted as `GenomicRanges` objects and saved as an `rds` for easy download. Each `unlist_*.rds` contains  a list of the peaks called for each TF for that brain region/cell-type. Some examples of data interaction are included below. To learn more about GenomicRanges object, see their [vignette](https://bioconductor.org/packages/release/bioc/vignettes/GenomicRanges/inst/doc/GenomicRangesIntroduction.html).
 
 #### Load data
 ```{r}
