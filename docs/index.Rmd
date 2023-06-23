@@ -187,6 +187,8 @@ dev.off()
 
 ```
 
+
+
 ## Fig 1B: ENCODE annotations
 ```{r, eval=F}
 tmp$encodeLabel<-ifelse(grepl("CTCF", tmp$encodeLabel),"CTCF-only",tmp$encodeLabel)
@@ -230,13 +232,13 @@ GO_PLS$encodeLabel<-"PLS"
 
 GO_ALL<-rbind(GO_none, GO_dELS, GO_pELS, GO_PLS)
 GO_ALL<-GO_ALL[which(GO_ALL$gene_set_size<1000),]
-top<-GO_ALL[which(GO_ALL$encodeLabel!="dELS"),] %>% group_by(encodeLabel) %>% top_n(n=5, wt=-p_adjust)
-
+top<-GO_ALL[which(GO_ALL$encodeLabel!="dELS"),] %>% group_by(encodeLabel) %>% top_n(n=7, wt=-p_adjust)
+top<-top[-c(2),]
 GO_top<-GO_ALL[which(GO_ALL$id %in% top$id),]
 GO_top$description<-factor(GO_top$description, levels=rev(top$description))
 GO_top$encodeLabel<-factor(GO_top$encodeLabel, levels=c("none","dELS","pELS","PLS"))
-pdf("GO_enrichment_dotPlot_ENCODE_annot.pdf", width=10, height=6)
-ggplot(GO_top, aes(x=encodeLabel,y=description, color=-log10(p_adjust), size=log2(fold_enrichment)))+geom_point()+theme_bw()+scale_color_gradient2(low="blue",mid="purple",high="red", midpoint=2, na.value="red", limits=c(0,5))+scale_radius(range=c(1,7), breaks=c(-1.5,-1,0,1,1.5), labels=c(-1.5,-1,0,1,1.5))
+pdf("GO_enrichment_dotPlot_ENCODE_annot2.pdf", width=6, height=7)
+ggplot(GO_top, aes(x=encodeLabel,y=description, color=-log10(p_adjust), size=log2(fold_enrichment)))+geom_point()+theme_bw()+scale_color_gradient2(low="blue",mid="purple",high="red", midpoint=2, na.value="red", limits=c(0,8))+scale_radius(range=c(1,7), breaks=c(-1.5,-1,0,1,1.5), labels=c(-1.5,-1,0,1,1.5))+scale_y_discrete(labels = function(x) str_wrap(x, width = 40))
 dev.off()
 
 
@@ -1027,6 +1029,29 @@ dev.off()
 ## Fig 3F: PKNOX1 density
 ```{r, eval=F}
 
+union_files<-as.list(readLines("BrainTF/all_union_files.csv"))
+m=sapply(strsplit(unlist(union_files),"[/]"),"[[",8)
+m2=sapply(strsplit(m,".", fixed=T),"[[",1)
+m2<-gsub("union_","", m2)
+union_list=lapply(union_files,function(x){
+  tmp<-GRanges(read.csv(x))
+})
+names(union_list)<-m2
+union_list<-union_list[sort(names(union_list))]
+
+
+unlist_files<-as.list(readLines("BrainTF/all_unlist_files.csv"))
+m=sapply(strsplit(unlist(unlist_files),"[/]"),"[[",8)
+m2=sapply(strsplit(m,".", fixed=T),"[[",1)
+m2<-gsub("unlist_","", m2)
+unlist_list=lapply(unlist_files,function(x){
+  tmp<-GRanges(read.csv(x))
+})
+names(unlist_list)<-m2
+unlist_list<-unlist_list[sort(names(unlist_list))]
+
+
+
 TF="PKNOX1"
 props<-list()
 for (i in 1:length(union_list)){
@@ -1050,15 +1075,15 @@ p_unlist$group<-gsub('[[:digit:]]+', '', p_unlist$group)
 p_unlist$group2<-gsub("union_","", p_unlist$group)
 colnames(p_unlist)[1]<-"PKNOX1"
 # which cell type did value come from
-p_unlist$ct<-sapply(strsplit(p_unlist$group2,"_", fixed=T),`[`,2)
+p_unlist$ct<-sapply(strsplit(p_unlist$group,"_", fixed=T),`[`,2)
 p_unlist$ct<-ifelse(is.na(p_unlist$ct)==T, "BULK", p_unlist$ct)
 p_unlist$ct<-factor(p_unlist$ct, levels=rev(c("BULK","OLIG","NEUN")))
 
-pdf("PKNOX1_skewness_density_plot.pdf", width=6, height=7)
+pdf("PKNOX1_skewness_density_plot2.pdf", width=6, height=7)
 p1<-ggplot(p_unlist[which(p_unlist$PKNOX1<=1),], aes(x=PKNOX1,fill=ct, color=ct))+geom_density(alpha=0.65)+theme_classic()+xlab("")+scale_fill_manual(limits=c("BULK","OLIG","NEUN"), values=c("darkgoldenrod2","darkgreen","dodgerblue3"), name="Cell type")+scale_color_manual(limits=c("BULK","OLIG","NEUN"), values=c("darkgoldenrod2","darkgreen","dodgerblue3"), name="Cell type",guide="none")
 
 
-p2<-ggplot(p_unlist[which(p_unlist$PKNOX1<=1),], aes(x=PKNOX1, fill=group2,y=ct))+geom_boxplot(alpha=0.85)+theme_classic()+ylab("cell type")+xlab("Proportion of TFs co-binding")+theme(axis.text.y=element_blank())+scale_fill_manual(limits=c("CB","DLPFC","FP","OL","DLPFC_OLIG","FP_OLIG","OL_OLIG","DLPFC_NEUN","FP_NEUN","OL_NEUN"), values=c("darkgoldenrod2","gold2","gold1","goldenrod1","green3","darkgreen","forestgreen","cornflowerblue","dodgerblue","darkblue"), name="")
+p2<-ggplot(p_unlist[which(p_unlist$PKNOX1<=1),], aes(x=PKNOX1, fill=group,y=ct))+geom_boxplot(alpha=0.85)+theme_classic()+ylab("cell type")+xlab("Proportion of TFs co-binding")+theme(axis.text.y=element_blank())+scale_fill_manual(limits=c("CB","DLPFC","FP","OL","DLPFC_OLIG","FP_OLIG","OL_OLIG","DLPFC_NEUN","FP_NEUN","OL_NEUN"), values=c("darkgoldenrod2","gold2","gold1","goldenrod1","green3","darkgreen","forestgreen","cornflowerblue","dodgerblue","darkblue"), name="")
 plot_grid(plotlist=list(p1,p2), ncol=1, rel_heights=c(3,2), rel_widths=c(10,7))
 dev.off()
 
@@ -1324,7 +1349,7 @@ tmp.m$TF<-ifelse(tmp.m$TF=="SIP1","ZEB2",
                                  ifelse(tmp.m$TF=="NRSF","REST",
                                         ifelse(tmp.m$TF=="NEUROD","NEUROD1",tmp.m$TF))))
 tmp.m<-merge(tmp.m, tmp2.m, by=c("TF","Motif"))
-write.csv(tmp.m, "~/myers/BrainTF/Motif_proportion.csv")
+write.csv(tmp.m, "BrainTF/Motif_proportion.csv")
 
 ```
 
