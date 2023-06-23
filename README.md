@@ -65,7 +65,8 @@ tidy$length<-str_count(tidy$name,",")+1
 mcols(union_DLPFC)$TF[tidy$subjectHit]<-tidy$name #add list of tfs to union grange
 mcols(union_DLPFC)$count[tidy$subjectHit]<-tidy$length
 names(union_DLPFC)<-NULL
-
-# Define HOT sites as greater than 90th percentile
+```
+#### Define HOT sites as greater than 90th percentile
+```{r}
 union_DLPFC$HOT<-ifelse(union_DLPFC$count> quantile(union_DLPFC$count, probs=0.9), "HOT","NOT")
 ```
