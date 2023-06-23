@@ -9,3 +9,63 @@ Transcription factors (TFs) orchestrate gene expression programs crucial for cel
 
 
 [![DOI](https://zenodo.org/badge/635343701.svg)](https://zenodo.org/badge/latestdoi/635343701)
+
+
+
+
+
+## Data Usage
+In addition, we have included a large portion of the data here ([data/](https://aanderson54.com/Loupe_BrainTF/data)) to facilitate the use of this resource. We have included ChIP-seq peaks from experiments performed in the 4 large brain regions (CB, DLPFC, FP, and OL) and in all cell types (Bulk, NeuN+, Olig2+, Neg). Peaks have been formatted as `GenomicRanges` objects and saved as an `rds` for easy download. Each `unlist_*.rds` contains  a list of the peaks called for each TF for that brain region/cell-type. Some examples of data interaction are included below. To learn more about GenomicRanges object, see their [vignette](https://bioconductor.org/packages/release/bioc/vignettes/GenomicRanges/inst/doc/GenomicRangesIntroduction.html).
+
+#### Load data
+```{r}
+library(GenomicRanges)
+unlist_DLPFC<-readRDS("unlist_DLPFC.rds")
+head(unlist_DLPFC)
+
+      seqnames     ranges        strand |        name     score  signalValue pValue    qValue       peak
+  [1]     chr1 16644628-16644842      * |       ASH2L      1000     132.671       -1   3.50934       104
+  [2]     chr6 17706875-17707084      * |       ASH2L      1000     119.128       -1   3.50934       131
+  [3]    chr18 50281464-50281927      * |       ASH2L      1000     119.083       -1   3.50934       232
+  [4]    chr17 39980706-39980909      * |       ASH2L      1000     117.065       -1   3.50934        87
+  [5]     chr6 26596803-26597010      * |       ASH2L      1000     114.682       -1   3.50934        87
+  [6]    chr17 26619998-26620117      * |       ASH2L      1000     113.692       -1   3.50934        32
+
+```
+#### Subset Peaks
+To look at only CTCF peaks:
+```{r}
+CTCF_peaks<-unlist_DLPFC[which(unlist_DLPFC$name=="CTCF"),]
+```
+
+#### Union Peaks
+
+```{r}
+union_DLPFC<-reduce(unlist_DLPFC)
+```
+Large union peaks were split into peaks of up to 2kb
+```{bash}
+#bash
+Rscript Breaking_up_merged_peaks_max_2kb_bins_parallel.R union_DLPFC.rds unlist_DLPFC.rds
+```
+
+Once large peaks have been broken up, we count the number of TFs binding at a union peak and define HOT sites.
+```{r}
+# Get overlaps between union and unlist
+overlaps<-findOverlaps(unlist_DLPFC, union_DLPFC)
+mcols(union_DLPFC)$TF<-NA #set empty var to write into
+
+# Get TF name for each unlist peak that overlaps
+tmp<-mcols(unlist_DLPFC)$name[queryHits(overlaps)]  
+df<-data.frame(tf=tmp, subjectHit=subjectHits(overlaps)) 
+tidy<-df %>% group_by(subjectHit) %>% summarize(name=paste(sort(unique(tf)), collapse=",")) #collapse tf names on union index
+
+# Count the number of TFs by counting commas +1
+tidy$length<-str_count(tidy$name,",")+1 
+mcols(union_DLPFC)$TF[tidy$subjectHit]<-tidy$name #add list of tfs to union grange
+mcols(union_DLPFC)$count[tidy$subjectHit]<-tidy$length
+names(union_DLPFC)<-NULL
+
+# Define HOT sites as greater than 90th percentile
+union_DLPFC$HOT<-ifelse(union_DLPFC$count> quantile(union_DLPFC$count, probs=0.9), "HOT","NOT")
+```
