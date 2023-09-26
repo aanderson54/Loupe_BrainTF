@@ -1,5 +1,6 @@
 QC metrics for all experiements can be accessed here. 
 
+https://htmlpreview.github.io/?https://github/com/aanderson54/Loupe_BrainTF/blob/main/QC/ARID1B_CB_Output_report.html
 
 [ARID1B_CB_Output_report.html](https://htmlpreview.github.io/?https://github/com/aanderson54/Loupe_BrainTF/blob/main/QC/ARID1B_CB_Output_report.html)
 [ARID1B_DLPFC_Output_report.html](https://htmlpreview.github.io/?https://github/com/aanderson54/Loupe_BrainTF/blob/main/QC/ARID1B_DLPFC_Output_report.html)
