@@ -1,4 +1,7 @@
-QC metrics for all experiements can be accessed here. 
+# QC metrics 
+
+## Each experiemnt was run through the ENCODE pipeline. The QC metrics for each of these runs can be found for the corresponing TF within it's drop down section. 
+
 
 #### ARID1B 
 <details closed>
