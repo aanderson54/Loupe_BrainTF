@@ -4,6 +4,7 @@
 
 
 #### ARID1B 
+
 <details closed>
   <summary>files</summary>
   
@@ -29,6 +30,7 @@
 #### ARNT
 <details closed>   
   <summary>files</summary> 
+
 [ARNT_CB_Output_report](https://htmlpreview.github.io/?https://github.com/aanderson54/Loupe_BrainTF/blob/main/QC/ARNT_CB_Output_report.html)\
 [ARNT_DLPFC_Output_report](https://htmlpreview.github.io/?https://github.com/aanderson54/Loupe_BrainTF/blob/main/QC/ARNT_DLPFC_Output_report.html)\
 [ARNT_FP_Output_report](https://htmlpreview.github.io/?https://github.com/aanderson54/Loupe_BrainTF/blob/main/QC/ARNT_FP_Output_report.html)\
