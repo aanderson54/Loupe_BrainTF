@@ -1,6 +1,6 @@
 # QC metrics 
 
-## Each experiemnt was run through the ENCODE pipeline. The QC metrics for each of these runs can be found for the corresponing TF within it's drop down section. 
+## Each experiment was run through the ENCODE pipeline. The QC metrics for each of these outputs can be found for the corresponing TF within it's drop down section. Information on the metrics calculated by the pipleine can be found through the ENCODE portal (https://www.encodeproject.org/data-standards/terms/#enrichment).
 
 
 #### ARID1B 
