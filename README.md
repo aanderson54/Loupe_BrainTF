@@ -1,4 +1,4 @@
-# Loupe BrainTF
+# Multi-omic profiling of transcription factor binding and function in human brain
 
 #### BioRxiv: https://www.biorxiv.org/content/10.1101/2023.06.21.545934v1
 
