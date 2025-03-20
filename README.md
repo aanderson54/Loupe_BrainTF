@@ -3,9 +3,14 @@
 ### Manuscript: Now published in [Nature Neuroscience](https://doi.org/10.1038/s41593-024-01658-8) 
 
 ### Data availability
-Data can be accessed on [synapse](https://doi.org/10.7303/syn51942384.1) or through our ChIP-portal. \
-\
-[![ChIP-portal](https://img.shields.io/badge/ChIP--portal-blue?style=for-the-badge)]([https://chip-portal.hudsonalpha.org/experiments])
+Data can be accessed at the following locations:
+
+| Location    | Files                     |
+|-------------|---------------------------|
+| [Synapse](https://doi.org/10.7303/syn51942384.1)     | raw data, bigwigs, peaks  |
+| [ChIP-Portal](https://chip-portal.hudsonalpha.org/experiments) | bigwigs, peaks            |
+| [Github](https://github.com/aanderson54/Loupe_BrainTF/tree/main/data)     | peaks                     |
+
 
 
 ### Abstract
