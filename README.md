@@ -8,7 +8,7 @@ Data can be accessed at the following locations:
 | Location    | Files                     |
 |-------------|---------------------------|
 | [Synapse](https://doi.org/10.7303/syn51942384.1)     | raw data, bigwigs, peaks  |
-| [ChIP-Portal](https://chip-portal.hudsonalpha.org/experiments) | bigwigs, peaks            |
+| [ChIP-Portal](https://chip-portal.hudsonalpha.org/experiments?q%5Bsource_in%5D%5B%5D=BrainTF) | bigwigs, peaks            |
 | [Github](https://github.com/aanderson54/Loupe_BrainTF/tree/main/data)     | peaks                     |
 
 
